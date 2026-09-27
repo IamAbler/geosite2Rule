@@ -124,42 +124,85 @@ export function domainMrs(domains) {
   return { body: wrap(0, count, domainSet(keys)), count, skipped };
 }
 
-function asBigInt(ip) {
-  const bytes = ip.length === 4
-    ? Uint8Array.of(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, ...ip)
-    : ip;
-  let value = 0n;
-  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
-  return value;
+function compareIpBytes(left, leftOffset, right, rightOffset) {
+  for (let i = 0; i < 16; i++) {
+    const difference = left[leftOffset + i] - right[rightOffset + i];
+    if (difference) return difference;
+  }
+  return 0;
 }
 
-function ipRange({ ip, prefix }) {
-  const bits = BigInt(ip.length * 8);
-  const hostBits = bits - BigInt(prefix);
-  const base = asBigInt(ip);
-  const mask = ((1n << bits) - 1n) ^ ((1n << hostBits) - 1n);
-  const offset = ip.length === 4 ? 0xffffn << 32n : 0n;
-  const from = (base & mask) | offset;
-  return { from, to: from | ((1n << hostBits) - 1n) };
+function adjacentIpBytes(from, fromOffset, to, toOffset) {
+  let borrow = 1;
+  for (let i = 15; i >= 0; i--) {
+    const value = from[fromOffset + i] - borrow;
+    borrow = value < 0 ? 1 : 0;
+    if ((value & 255) !== to[toOffset + i]) return false;
+  }
+  return true;
+}
+
+function sortedIpRanges(networks) {
+  const count = networks.length;
+  const from = new Uint8Array(count * 16);
+  const to = new Uint8Array(count * 16);
+  for (let index = 0; index < count; index++) {
+    const { ip, prefix } = networks[index];
+    const offset = index * 16;
+    const start = ip.length === 4 ? 12 : 0;
+    if (start) {
+      from[offset + 10] = to[offset + 10] = 255;
+      from[offset + 11] = to[offset + 11] = 255;
+    }
+    for (let byte = 0; byte < ip.length; byte++) {
+      const remaining = prefix - byte * 8;
+      const mask = remaining >= 8 ? 255 : remaining <= 0 ? 0 : (255 << (8 - remaining)) & 255;
+      const value = ip[byte] & mask;
+      from[offset + start + byte] = value;
+      to[offset + start + byte] = value | (~mask & 255);
+    }
+  }
+
+  let order = new Uint32Array(count);
+  let scratch = new Uint32Array(count);
+  for (let i = 0; i < count; i++) order[i] = i;
+  const positions = new Uint32Array(256);
+  for (let column = 15; column >= 0; column--) {
+    positions.fill(0);
+    for (let i = 0; i < count; i++) positions[from[order[i] * 16 + column]]++;
+    let total = 0;
+    for (let byte = 0; byte < 256; byte++) {
+      const size = positions[byte];
+      positions[byte] = total;
+      total += size;
+    }
+    for (let i = 0; i < count; i++) {
+      const index = order[i];
+      scratch[positions[from[index * 16 + column]]++] = index;
+    }
+    [order, scratch] = [scratch, order];
+  }
+
+  const pairs = new Uint8Array(count * 32);
+  let mergedCount = 0;
+  for (const index of order) {
+    const offset = index * 16;
+    const lastTo = (mergedCount - 1) * 32 + 16;
+    if (mergedCount && (compareIpBytes(from, offset, pairs, lastTo) <= 0 ||
+      adjacentIpBytes(from, offset, pairs, lastTo))) {
+      if (compareIpBytes(to, offset, pairs, lastTo) > 0) pairs.set(to.subarray(offset, offset + 16), lastTo);
+    } else {
+      pairs.set(from.subarray(offset, offset + 16), mergedCount * 32);
+      pairs.set(to.subarray(offset, offset + 16), mergedCount * 32 + 16);
+      mergedCount++;
+    }
+  }
+  return { pairs: pairs.subarray(0, mergedCount * 32), mergedCount };
 }
 
 export function ipMrs(networks) {
   if (!networks.length) throw new Error("MRS requires at least one IP rule");
-  const ranges = networks.map(ipRange).sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
-  const merged = [];
-  for (const range of ranges) {
-    const last = merged.at(-1);
-    if (last && range.from <= last.to + 1n) {
-      if (range.to > last.to) last.to = range.to;
-    } else merged.push({ ...range });
-  }
-  const pairs = new Uint8Array(merged.length * 32);
-  merged.forEach((range, index) => {
-    const from = join([u64(range.from >> 64n), u64(range.from & ((1n << 64n) - 1n))]);
-    const to = join([u64(range.to >> 64n), u64(range.to & ((1n << 64n) - 1n))]);
-    pairs.set(from, index * 32);
-    pairs.set(to, index * 32 + 16);
-  });
-  const body = join([Uint8Array.of(1), u64(merged.length), pairs]);
+  const { pairs, mergedCount } = sortedIpRanges(networks);
+  const body = join([Uint8Array.of(1), u64(mergedCount), pairs]);
   return { body: wrap(1, networks.length, body), count: networks.length, skipped: 0 };
 }

@@ -5,15 +5,22 @@ function siteCode(bytes, start, end) {
   return firstString(bytes, start, end, 1).toLowerCase();
 }
 
-export function listCategories(bytes) {
-  const categories = [];
+export function indexSiteCategories(bytes) {
+  const index = new Map();
   visit(bytes, 0, bytes.length, item => {
     if (item.number === 1 && item.wire === 2) {
       const code = siteCode(bytes, item.start, item.end);
-      if (code) categories.push(code);
+      if (code) {
+        if (!index.has(code)) index.set(code, []);
+        index.get(code).push([item.start, item.end]);
+      }
     }
   });
-  return [...new Set(categories)].sort();
+  return index;
+}
+
+export function listCategories(bytes, index = indexSiteCategories(bytes)) {
+  return [...index.keys()].sort();
 }
 
 function attributes(bytes, start, end) {
@@ -50,13 +57,24 @@ function domain(bytes, start, end, include, exclude) {
   return { type, value: valueStart < 0 ? "" : string(bytes, valueStart, valueEnd) };
 }
 
-export function readCategory(bytes, category, include = [], exclude = []) {
+function visitSiteCategory(bytes, category, index, callback) {
+  if (index) {
+    for (const [start, end] of index.get(category) || []) callback(start, end);
+    return;
+  }
+  visit(bytes, 0, bytes.length, site => {
+    if (site.number === 1 && site.wire === 2 && siteCode(bytes, site.start, site.end) === category) {
+      callback(site.start, site.end);
+    }
+  });
+}
+
+export function readCategory(bytes, category, include = [], exclude = [], index = null) {
   const domains = [];
   let found = false;
-  visit(bytes, 0, bytes.length, site => {
-    if (site.number !== 1 || site.wire !== 2 || siteCode(bytes, site.start, site.end) !== category) return;
+  visitSiteCategory(bytes, category, index, (start, end) => {
     found = true;
-    visit(bytes, site.start, site.end, item => {
+    visit(bytes, start, end, item => {
       if (item.number !== 2 || item.wire !== 2) return;
       const entry = domain(bytes, item.start, item.end, include, exclude);
       if (entry) domains.push(entry);
@@ -65,13 +83,12 @@ export function readCategory(bytes, category, include = [], exclude = []) {
   return { found, domains };
 }
 
-export function listAttributes(bytes, category) {
+export function listAttributes(bytes, category, index = null) {
   const names = new Set();
   let found = false;
-  visit(bytes, 0, bytes.length, site => {
-    if (site.number !== 1 || site.wire !== 2 || siteCode(bytes, site.start, site.end) !== category) return;
+  visitSiteCategory(bytes, category, index, (start, end) => {
     found = true;
-    visit(bytes, site.start, site.end, item => {
+    visit(bytes, start, end, item => {
       if (item.number !== 2 || item.wire !== 2) return;
       visit(bytes, item.start, item.end, part => {
         if (part.number !== 3 || part.wire !== 2) return;

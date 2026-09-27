@@ -1,5 +1,5 @@
-import { listCategories, listAttributes, readCategory } from "./geosite.js";
-import { listIpCategories, readIpCategory } from "./geoip.js";
+import { indexSiteCategories, listCategories, listAttributes, readCategory } from "./geosite.js";
+import { indexIpCategories, listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
 
 const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
@@ -16,6 +16,12 @@ const CACHE_SECONDS = 3600;
 const KV_FRESH_SECONDS = 6 * 3600;
 const KV_RETENTION_SECONDS = 30 * 24 * 3600;
 const MAX_KV_BODY_LENGTH = 8 * 1024 * 1024;
+const MAX_KV_KEY_LENGTH = 512;
+const REFRESH_PREFIX = "refresh:";
+const MAX_SOURCE_CACHE_BYTES = 48 * 1024 * 1024;
+const MAX_SOURCE_CACHE_ENTRIES = 2;
+const sourceCache = new Map();
+const pendingSources = new Map();
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
@@ -34,7 +40,7 @@ function selection(raw, type) {
     else include.push(part);
   }
   if (include.some(name => exclude.includes(name))) return null;
-  return { category: parts[0], include, exclude };
+  return { category: parts[0], include: [...new Set(include)].sort(), exclude: [...new Set(exclude)].sort() };
 }
 
 function checkedUrl(value) {
@@ -80,16 +86,23 @@ async function fetchSourceBytes(value) {
     throw new Error("Source exceeds 32 MiB limit");
   }
   if (!response.body) throw new Error("Source has no body");
-  const chunks = [];
+  const initialLength = Number(response.headers.get("content-length"));
+  let bytes = new Uint8Array(Number.isSafeInteger(initialLength) && initialLength > 0 ? initialLength : 64 * 1024);
   let size = 0;
   const reader = response.body.getReader();
   try {
     while (true) {
       const { value: chunk, done } = await reader.read();
       if (done) break;
-      size += chunk.length;
-      if (size > MAX_SOURCE_BYTES) throw new Error("Source exceeds 32 MiB limit");
-      chunks.push(chunk);
+      const nextSize = size + chunk.length;
+      if (nextSize > MAX_SOURCE_BYTES) throw new Error("Source exceeds 32 MiB limit");
+      if (nextSize > bytes.length) {
+        const expanded = new Uint8Array(Math.min(MAX_SOURCE_BYTES, Math.max(nextSize, bytes.length * 2)));
+        expanded.set(bytes.subarray(0, size));
+        bytes = expanded;
+      }
+      bytes.set(chunk, size);
+      size = nextSize;
     }
   } catch (error) {
     await reader.cancel();
@@ -97,10 +110,7 @@ async function fetchSourceBytes(value) {
   } finally {
     reader.releaseLock();
   }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-  return bytes;
+  return size === bytes.length ? bytes : bytes.slice(0, size);
 }
 
 async function sourceBytes(choice) {
@@ -111,6 +121,38 @@ async function sourceBytes(choice) {
     console.warn("Primary source unavailable; using GitHub fallback", error);
     return fetchSourceBytes(choice.fallbackUrl);
   }
+}
+
+async function sourceData(choice, type) {
+  const key = `${type}:${choice.url}`;
+  const cached = sourceCache.get(key);
+  if (cached) {
+    sourceCache.delete(key);
+    if (cached.expiresAt > Date.now()) {
+      sourceCache.set(key, cached);
+      return cached;
+    }
+  }
+  if (pendingSources.has(key)) return pendingSources.get(key);
+  const pending = (async () => {
+    const bytes = await sourceBytes(choice);
+    const index = type === "geoip" ? indexIpCategories(bytes) : indexSiteCategories(bytes);
+    const data = { bytes, index, expiresAt: Date.now() + CACHE_SECONDS * 1000 };
+    if (bytes.byteLength <= MAX_SOURCE_CACHE_BYTES) {
+      sourceCache.set(key, data);
+      let total = 0;
+      for (const item of sourceCache.values()) total += item.bytes.byteLength;
+      while (total > MAX_SOURCE_CACHE_BYTES || sourceCache.size > MAX_SOURCE_CACHE_ENTRIES) {
+        const oldest = sourceCache.keys().next().value;
+        total -= sourceCache.get(oldest).bytes.byteLength;
+        sourceCache.delete(oldest);
+      }
+    }
+    return data;
+  })();
+  pendingSources.set(key, pending);
+  try { return await pending; }
+  finally { pendingSources.delete(key); }
 }
 
 function yaml(rules) {
@@ -232,17 +274,24 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
     }
 
     const cache = globalThis.caches?.default;
-    const cacheUrl = new URL(url.pathname, url.origin);
+    const cacheUrl = new URL(url.origin);
+    if (ruleMatch) {
+      const name = [selected.category, ...selected.include, ...selected.exclude.map(value => `-${value}`)].join("@");
+      const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : "list";
+      cacheUrl.pathname = `/rules/${type === "geoip" ? "geoip/" : ""}${format}/${encodeURIComponent(name)}.${suffix}`;
+    } else if (attributeMatch) {
+      cacheUrl.pathname = `/attributes/${encodeURIComponent(selected.category)}`;
+    } else cacheUrl.pathname = url.pathname;
     if (isCategories || isVersion) cacheUrl.searchParams.set("type", type);
     if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
-    if (choice.id === "custom") cacheUrl.searchParams.set("url", choice.url);
+    cacheUrl.searchParams.set("source_url", choice.url);
     const cacheKey = new Request(cacheUrl);
     const kvKey = choice.id === "loyalsoldier" ? `v1:${choice.url}:${cacheUrl.pathname}${cacheUrl.search}` : null;
     if (!forceRefresh && cache) {
       const hit = await cache.match(cacheKey);
       if (hit) return forHead(request, hit);
     }
-    if (!forceRefresh && kvKey && env.RULE_CACHE && kvKey.length <= 512) {
+    if (!forceRefresh && kvKey && env.RULE_CACHE && kvKey.length <= MAX_KV_KEY_LENGTH - REFRESH_PREFIX.length) {
       try {
         const { value, metadata } = await env.RULE_CACHE.getWithMetadata(kvKey, { type: "arrayBuffer", cacheTtl: 60 });
         if (value && metadata?.headers) {
@@ -269,22 +318,22 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
       if (isVersion) {
         response = json(await version(choice));
       } else {
-        const bytes = await sourceBytes(choice);
+        const { bytes, index } = await sourceData(choice, type);
         if (isCategories) {
-          response = json({ categories: type === "geoip" ? listIpCategories(bytes) : listCategories(bytes) });
+          response = json({ categories: type === "geoip" ? listIpCategories(bytes, index) : listCategories(bytes, index) });
         } else if (attributeMatch) {
-          const data = listAttributes(bytes, selected.category);
+          const data = listAttributes(bytes, selected.category, index);
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           response = json(data);
         } else if (type === "geoip") {
-          const data = readIpCategory(bytes, selected.category, format !== "mrs");
+          const data = readIpCategory(bytes, selected.category, format !== "mrs", index);
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           if (data.inverse) return json({ error: "Inverse GeoIP categories cannot be converted to a positive ruleset" }, 422);
           const result = renderIp(data, format);
           kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
           response = responseForRules(result, format);
         } else {
-          const data = readCategory(bytes, selected.category, selected.include, selected.exclude);
+          const data = readCategory(bytes, selected.category, selected.include, selected.exclude, index);
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           const result = renderSite(data.domains, format);
           kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
@@ -292,12 +341,15 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
         }
       }
       response.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
-      if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
-      if (kvCacheable && kvKey && env.RULE_CACHE && kvKey.length <= 512) {
+      if (cache && !forceRefresh) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+      if (kvCacheable && kvKey && env.RULE_CACHE && kvKey.length <= MAX_KV_KEY_LENGTH - REFRESH_PREFIX.length) {
         const headers = Object.fromEntries(response.headers);
+        const refreshedAt = Date.now();
         const write = env.RULE_CACHE.put(kvKey, response.clone().body, {
-          expirationTtl: KV_RETENTION_SECONDS, metadata: { headers, refreshedAt: Date.now() }
-        }).catch(error => console.warn("KV cache write unavailable", error));
+          expirationTtl: KV_RETENTION_SECONDS, metadata: { headers, refreshedAt }
+        }).then(() => env.RULE_CACHE.put(`${REFRESH_PREFIX}${kvKey}`, String(refreshedAt), {
+          expirationTtl: KV_RETENTION_SECONDS
+        })).catch(error => console.warn("KV cache write unavailable", error));
         if (forceRefresh) await write;
         else ctx.waitUntil(write);
       }
@@ -315,8 +367,8 @@ export default {
   },
   async queue(batch, env, ctx) {
     for (const message of batch.messages) {
-      const stored = await env.RULE_CACHE.getWithMetadata(message.body.kvKey, { type: "text", cacheTtl: 60 });
-      if (stored.value !== null && (stored.metadata?.refreshedAt || 0) !== message.body.refreshedAt) {
+      const refreshedAt = await env.RULE_CACHE.get(`${REFRESH_PREFIX}${message.body.kvKey}`, { type: "text", cacheTtl: 60 });
+      if (refreshedAt !== null && Number(refreshedAt) > message.body.refreshedAt) {
         message.ack();
         continue;
       }

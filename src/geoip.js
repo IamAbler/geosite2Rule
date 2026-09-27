@@ -5,15 +5,22 @@ function countryCode(bytes, start, end) {
   return firstString(bytes, start, end, 1).toLowerCase();
 }
 
-export function listIpCategories(bytes) {
-  const categories = new Set();
+export function indexIpCategories(bytes) {
+  const index = new Map();
   visit(bytes, 0, bytes.length, item => {
     if (item.number === 1 && item.wire === 2) {
       const code = countryCode(bytes, item.start, item.end);
-      if (code) categories.add(code);
+      if (code) {
+        if (!index.has(code)) index.set(code, []);
+        index.get(code).push([item.start, item.end]);
+      }
     }
   });
-  return [...categories].sort();
+  return index;
+}
+
+export function listIpCategories(bytes, index = indexIpCategories(bytes)) {
+  return [...index.keys()].sort();
 }
 
 function ipv6(bytes) {
@@ -47,20 +54,28 @@ function cidr(bytes, start, end, withString) {
   return { value: withString ? `${ip.length === 4 ? [...ip].join(".") : ipv6(ip)}/${prefix}` : null, ip, prefix };
 }
 
-export function readIpCategory(bytes, category, withStrings = true) {
+export function readIpCategory(bytes, category, withStrings = true, index = null) {
   const networks = [];
   let found = false;
   let inverse = false;
-  visit(bytes, 0, bytes.length, entry => {
-    if (entry.number !== 1 || entry.wire !== 2 || countryCode(bytes, entry.start, entry.end) !== category) return;
+  const visitEntry = (start, end) => {
     found = true;
-    visit(bytes, entry.start, entry.end, item => {
+    visit(bytes, start, end, item => {
       if (item.number === 2 && item.wire === 2) networks.push(cidr(bytes, item.start, item.end, withStrings));
       if (item.number === 3 && item.wire === 0) {
         const [value] = varint(bytes, item.start, item.end);
         inverse ||= value !== 0;
       }
     });
-  });
+  };
+  if (index) {
+    for (const [start, end] of index.get(category) || []) visitEntry(start, end);
+  } else {
+    visit(bytes, 0, bytes.length, entry => {
+      if (entry.number === 1 && entry.wire === 2 && countryCode(bytes, entry.start, entry.end) === category) {
+        visitEntry(entry.start, entry.end);
+      }
+    });
+  }
   return { found, inverse, cidrs: withStrings ? networks.map(network => network.value) : [], networks };
 }
