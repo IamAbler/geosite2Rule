@@ -352,7 +352,6 @@ async function handleRequest(request, env, ctx) {
       if (isVersion) {
         response = json(await version(choice));
       } else {
-        if (persistent && !fetched) fetched = await sourceBytes(choice);
         const { bytes, index } = await sourceData(choice, type, fetched);
         if (!index.size) return json({ error: "Source contains no categories" }, 422);
         if (persistent) {

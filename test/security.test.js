@@ -25,6 +25,12 @@ function siteData(type = 2, value = "example.org") {
   return new Uint8Array(field(1, category));
 }
 
+function siteDataWithCategories() {
+  const category = (name, value) => [...field(1, name), ...field(2, [8, 2, ...field(2, value)])];
+  return new Uint8Array([...field(1, category("test", "example.org")),
+    ...field(1, category("other", "other.org"))]);
+}
+
 function ipData(inverse = false) {
   const cidr = [...field(1, Uint8Array.of(1, 2, 3, 0)), 16, 24];
   const country = [...field(1, "cn"), ...field(2, cidr), ...(inverse ? [24, 1] : [])];
@@ -137,6 +143,31 @@ test("reports D1 hits without downloading a source", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-cache-layer"), "d1");
   assert.equal(calls.length, 0);
+});
+
+test("reuses parsed source data for separate D1 misses in one isolate", async () => {
+  const source = `https://public.test.org/${Date.now()}/shared.dat`;
+  const bytes = siteDataWithCategories();
+  let dbReads = 0;
+  const env = {
+    SOURCE_URL: source,
+    RULE_CACHE: { async get() { return { sha256: "a".repeat(64), checkedAt: Date.now() }; } },
+    RULE_DB: {
+      prepare() {
+        return { bind() { return {
+          async first() { dbReads++; return null; },
+          async run() { return {}; }
+        }; } };
+      },
+      async batch() { return []; }
+    }
+  };
+  const first = await request("/rules/clash/test.yaml", () => new Response(bytes), env);
+  const second = await request("/rules/clash/other.yaml", () => new Response(bytes), env);
+  assert.equal(first.response.status, 200);
+  assert.equal(second.response.status, 200);
+  assert.equal(first.calls.length + second.calls.length, 1);
+  assert.ok(dbReads >= 2);
 });
 
 test("rejects unknown attributes and conversions with no supported rules", async () => {
