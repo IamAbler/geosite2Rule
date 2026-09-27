@@ -1,0 +1,8 @@
+{
+  "name": "geosite2rule",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "vars": {
+    "SOURCE_URL": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+  }
+}
