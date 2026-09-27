@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const sourceType = ref("geosite");
 const format = ref("clash");
@@ -9,6 +9,8 @@ const categoryQuery = ref("");
 const categoryOpen = ref(false);
 const activeIndex = ref(0);
 const picker = ref(null);
+const pickerTrigger = ref(null);
+const pickerSearch = ref(null);
 const categoryError = ref("");
 const categoriesLoading = ref(false);
 const versionLoading = ref(false);
@@ -33,7 +35,10 @@ const matches = computed(() => {
   const query = categoryQuery.value.trim().toLowerCase();
   return query ? categories.value.filter(name => name.includes(query)) : categories.value;
 });
-const shownCategories = computed(() => matches.value.slice(0, 80));
+const shownCategories = computed(() => {
+  if (categoryQuery.value.trim() || !category.value) return matches.value.slice(0, 80);
+  return [category.value, ...matches.value.filter(name => name !== category.value).slice(0, 79)];
+});
 const sourceName = computed(() => sourceType.value === "geoip" ? "geoip.dat" : "geosite.dat");
 const selectedAttributes = computed(() => Object.entries(attributeModes.value).filter(([, mode]) => mode));
 const ruleUrl = computed(() => {
@@ -75,44 +80,58 @@ const versionNote = computed(() => {
 
 function selectCategory(name) {
   category.value = name;
-  categoryQuery.value = name;
-  categoryOpen.value = false;
+  dismissPicker();
   message.value = "";
+  nextTick(() => pickerTrigger.value?.focus());
 }
 
-function openPicker() {
+function dismissPicker() {
+  categoryOpen.value = false;
   categoryQuery.value = "";
-  categoryOpen.value = true;
   activeIndex.value = 0;
+}
+
+function togglePicker() {
+  if (categoryOpen.value) {
+    dismissPicker();
+    return;
+  }
+  categoryQuery.value = "";
+  activeIndex.value = 0;
+  categoryOpen.value = true;
+  nextTick(() => pickerSearch.value?.focus());
 }
 
 function onCategoryInput(event) {
   categoryQuery.value = event.target.value;
-  category.value = "";
-  categoryOpen.value = true;
   activeIndex.value = 0;
 }
 
 function onCategoryKeydown(event) {
   if (event.key === "Escape") {
-    categoryOpen.value = false;
-    categoryQuery.value = category.value;
+    dismissPicker();
+    nextTick(() => pickerTrigger.value?.focus());
   } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
-    categoryOpen.value = true;
+    if (!shownCategories.value.length) return;
     const delta = event.key === "ArrowDown" ? 1 : -1;
     activeIndex.value = Math.max(0, Math.min(shownCategories.value.length - 1, activeIndex.value + delta));
+    nextTick(() => picker.value?.querySelector(".picker-option.focused")?.scrollIntoView({ block: "nearest" }));
   } else if (event.key === "Enter" && categoryOpen.value && shownCategories.value.length) {
     event.preventDefault();
     selectCategory(shownCategories.value[activeIndex.value] || shownCategories.value[0]);
   }
 }
 
-function closePicker(event) {
-  if (picker.value && !picker.value.contains(event.target)) {
-    categoryOpen.value = false;
-    categoryQuery.value = category.value;
-  }
+function clearCategory() {
+  category.value = "";
+  dismissPicker();
+  message.value = "";
+  nextTick(() => pickerTrigger.value?.focus());
+}
+
+function closeOnOutside(event) {
+  if (categoryOpen.value && picker.value && !picker.value.contains(event.target)) dismissPicker();
 }
 
 function cycleAttribute(name) {
@@ -188,8 +207,7 @@ async function copyUrl() {
 watch(sourceType, type => {
   const requestId = ++sourceRequest;
   category.value = "";
-  categoryQuery.value = "";
-  categoryOpen.value = false;
+  dismissPicker();
   categories.value = [];
   version.value = null;
   message.value = "";
@@ -198,8 +216,14 @@ watch(sourceType, type => {
 }, { immediate: true });
 watch([category, sourceType], loadAttributes);
 watch([format, selectedAttributes], () => { message.value = ""; });
-onMounted(() => document.addEventListener("pointerdown", closePicker));
-onBeforeUnmount(() => document.removeEventListener("pointerdown", closePicker));
+onMounted(() => {
+  document.addEventListener("pointerdown", closeOnOutside);
+  document.addEventListener("focusin", closeOnOutside);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", closeOnOutside);
+  document.removeEventListener("focusin", closeOnOutside);
+});
 </script>
 
 <template>
@@ -226,29 +250,36 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", closePicker));
           </div>
         </div>
         <div class="field">
-          <div class="label-row"><label for="category-search">选择分类</label><span class="hint">{{ categoriesLoading ? '加载中…' : categories.length + ' 个分类' }}</span></div>
+          <div class="label-row"><label for="category-trigger">选择分类</label><span class="hint">{{ categoriesLoading ? '加载中…' : categories.length + ' 个分类' }}</span></div>
           <div ref="picker" class="picker">
-            <div class="picker-input-wrap">
-              <input id="category-search" class="input picker-input" type="search" autocomplete="off" role="combobox"
-                aria-controls="category-options" :aria-expanded="categoryOpen" aria-autocomplete="list"
-                :value="categoryQuery" :placeholder="categoriesLoading ? '正在读取分类…' : '搜索或选择分类'"
-                @focus="openPicker" @input="onCategoryInput" @keydown="onCategoryKeydown">
-              <span class="picker-arrow" aria-hidden="true">⌄</span>
-            </div>
-            <div v-if="categoryOpen" id="category-options" class="picker-menu" role="listbox">
+            <button id="category-trigger" ref="pickerTrigger" class="picker-trigger" type="button"
+              :aria-expanded="categoryOpen" aria-controls="category-options" aria-haspopup="listbox" @click="togglePicker">
+              <span :class="{ placeholder: !category }">{{ category || (categoriesLoading ? '正在读取分类…' : '请选择分类') }}</span>
+              <span class="picker-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div v-if="categoryOpen" id="category-options" class="picker-menu">
+              <div class="picker-search-wrap">
+                <input id="category-search" ref="pickerSearch" class="input picker-search" type="search" autocomplete="off"
+                  role="combobox" aria-controls="category-list" :aria-expanded="categoryOpen" aria-autocomplete="list"
+                  :aria-activedescendant="shownCategories.length ? 'category-option-' + activeIndex : undefined"
+                  :value="categoryQuery" placeholder="输入分类名称搜索" @input="onCategoryInput" @keydown="onCategoryKeydown">
+              </div>
+              <div id="category-list" class="picker-list" role="listbox">
               <p v-if="categoriesLoading" class="picker-empty">正在读取分类…</p>
-              <p v-else-if="categoryError" class="picker-empty">{{ categoryError }}</p>
+              <div v-else-if="categoryError" class="picker-empty">{{ categoryError }}<button type="button" class="retry" @click="loadCategories(sourceType, sourceRequest)">重试</button></div>
               <p v-else-if="!matches.length" class="picker-empty">没有匹配的分类</p>
               <template v-else>
-                <button v-for="(name, index) in shownCategories" :key="name" type="button" role="option"
+                <button v-for="(name, index) in shownCategories" :id="'category-option-' + index" :key="name" type="button" role="option"
                   :aria-selected="name === category" :class="['picker-option', { focused: index === activeIndex, chosen: name === category }]"
-                  @pointerdown.prevent="selectCategory(name)">{{ name }}<span v-if="name === category" aria-hidden="true">✓</span></button>
+                  @mouseenter="activeIndex = index" @click="selectCategory(name)">{{ name }}<span v-if="name === category" aria-hidden="true">✓</span></button>
                 <p v-if="matches.length > shownCategories.length" class="picker-more">还有 {{ matches.length - shownCategories.length }} 个结果，请继续输入关键词</p>
               </template>
+              </div>
+              <div v-if="category" class="picker-footer"><button type="button" @click="clearCategory">清除当前选择</button></div>
             </div>
           </div>
           <p class="helper" v-if="categoryError">{{ categoryError }}</p>
-          <p class="helper" v-else>{{ category ? '已选择 ' + category : '输入关键词搜索，点击结果即可选择' }}</p>
+          <p class="helper" v-else>{{ category ? '当前分类：' + category + ' · 点击上方可更换' : '展开后搜索并选择分类' }}</p>
         </div>
         <div v-if="sourceType === 'geosite'" class="field">
           <div class="label-row"><strong>属性筛选</strong><span class="hint">点击切换 包含 → 排除 → 取消</span></div>
