@@ -2,6 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const sourceType = ref("geosite");
+const provider = ref("loyalsoldier");
+const customDraft = ref({ geosite: "", geoip: "" });
+const customApplied = ref({ geosite: "", geoip: "" });
+const customError = ref("");
 const format = ref("clash");
 const categories = ref([]);
 const category = ref("");
@@ -39,10 +43,33 @@ const shownCategories = computed(() => {
   if (categoryQuery.value.trim() || !category.value) return matches.value.slice(0, 80);
   return [category.value, ...matches.value.filter(name => name !== category.value).slice(0, 79)];
 });
-const sourceName = computed(() => sourceType.value === "geoip" ? "geoip.dat" : "geosite.dat");
+const activeCustomUrl = computed(() => customApplied.value[sourceType.value]);
+const sourceParameters = computed(() => {
+  if (provider.value === "loyalsoldier") return "";
+  const params = new URLSearchParams({ source: provider.value });
+  if (provider.value === "custom") {
+    if (!activeCustomUrl.value) return null;
+    params.set("url", activeCustomUrl.value);
+  }
+  return params.toString();
+});
+const providerName = computed(() => ({ loyalsoldier: "Loyalsoldier", v2fly: "V2Fly", custom: "自定义" })[provider.value]);
+const sourceName = computed(() => {
+  if (provider.value === "v2fly" && sourceType.value === "geosite") return "dlc.dat";
+  if (provider.value === "custom") {
+    return activeCustomUrl.value ? new URL(activeCustomUrl.value).pathname.split("/").pop() || "custom.dat" : "未设置";
+  }
+  return sourceType.value === "geoip" ? "geoip.dat" : "geosite.dat";
+});
+function endpoint(path, type = null) {
+  const params = new URLSearchParams(sourceParameters.value || "");
+  if (type) params.set("type", type);
+  const query = params.toString();
+  return path + (query ? "?" + query : "");
+}
 const selectedAttributes = computed(() => Object.entries(attributeModes.value).filter(([, mode]) => mode));
 const ruleUrl = computed(() => {
-  if (!category.value) return "";
+  if (!category.value || sourceParameters.value === null) return "";
   let name = category.value;
   if (sourceType.value === "geosite") {
     for (const [attribute, mode] of selectedAttributes.value) {
@@ -51,7 +78,7 @@ const ruleUrl = computed(() => {
   }
   const path = sourceType.value === "geoip" ? "/rules/geoip/" : "/rules/";
   const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : ".list";
-  return location.origin + path + format.value + "/" + encodeURIComponent(name) + extension;
+  return location.origin + endpoint(path + format.value + "/" + encodeURIComponent(name) + extension);
 });
 const behavior = computed(() => sourceType.value === "geoip" ? "ipcidr" : format.value === "mrs" ? "domain" : "classical");
 const snippet = computed(() => {
@@ -66,6 +93,7 @@ const snippet = computed(() => {
   ].join("\n");
 });
 const versionText = computed(() => {
+  if (sourceParameters.value === null) return "待设置";
   if (versionLoading.value) return "读取中…";
   if (!version.value?.date) return "暂无日期";
   return new Date(version.value.date).toLocaleString("zh-CN", {
@@ -74,6 +102,7 @@ const versionText = computed(() => {
   }) + " CST";
 });
 const versionNote = computed(() => {
+  if (sourceParameters.value === null) return "应用地址后显示版本日期";
   if (!version.value?.date) return versionLoading.value ? "" : "当前数据源未提供可确认的更新时间";
   return version.value.source === "release" ? "GitHub Release 文件更新时间" : "源文件 Last-Modified";
 });
@@ -143,6 +172,28 @@ function cycleAttribute(name) {
   message.value = "";
 }
 
+function applyCustom() {
+  const applied = { ...customApplied.value };
+  for (const type of ["geosite", "geoip"]) {
+    const value = customDraft.value[type].trim();
+    if (!value) { applied[type] = ""; continue; }
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password || url.hash || url.href.length > 2048 ||
+        url.hostname === "localhost" || url.hostname.endsWith(".localhost") ||
+        url.hostname.endsWith(".local") || /^\d+(?:\.\d+){3}$/.test(url.hostname) || url.hostname.startsWith("[")) {
+        throw new Error();
+      }
+      applied[type] = url.href;
+    } catch {
+      customError.value = (type === "geosite" ? "Geosite" : "GeoIP") + " 地址需要是公开的 HTTPS URL";
+      return;
+    }
+  }
+  customError.value = "";
+  customApplied.value = applied;
+}
+
 async function loadAttributes() {
   const requestId = ++attributeRequest;
   availableAttributes.value = [];
@@ -152,7 +203,7 @@ async function loadAttributes() {
   if (sourceType.value !== "geosite" || !category.value) return;
   attributesLoading.value = true;
   try {
-    const response = await fetch("/attributes/" + encodeURIComponent(category.value));
+    const response = await fetch(endpoint("/attributes/" + encodeURIComponent(category.value)));
     if (!response.ok) throw new Error("属性加载失败，请稍后重试");
     const data = await response.json();
     if (requestId !== attributeRequest) return;
@@ -168,8 +219,8 @@ async function loadCategories(type, requestId) {
   categoriesLoading.value = true;
   categoryError.value = "";
   try {
-    const response = await fetch("/categories?type=" + type);
-    if (!response.ok) throw new Error("分类加载失败，请稍后重试");
+    const response = await fetch(endpoint("/categories", type));
+    if (!response.ok) throw new Error(provider.value === "custom" ? "无法读取自定义文件，请检查地址和 .dat 格式" : "分类加载失败，请稍后重试");
     const data = await response.json();
     if (requestId !== sourceRequest) return;
     categories.value = data.categories || [];
@@ -183,7 +234,7 @@ async function loadCategories(type, requestId) {
 async function loadVersion(type, requestId) {
   versionLoading.value = true;
   try {
-    const response = await fetch("/version?type=" + type);
+    const response = await fetch(endpoint("/version", type));
     if (!response.ok) throw new Error("日期读取失败");
     const data = await response.json();
     if (requestId === sourceRequest) version.value = data;
@@ -204,13 +255,20 @@ async function copyUrl() {
   }
 }
 
-watch(sourceType, type => {
+watch([sourceType, provider, activeCustomUrl], ([type]) => {
   const requestId = ++sourceRequest;
   category.value = "";
   dismissPicker();
   categories.value = [];
   version.value = null;
   message.value = "";
+  customError.value = "";
+  if (sourceParameters.value === null) {
+    categoriesLoading.value = false;
+    versionLoading.value = false;
+    categoryError.value = "请先填写并应用当前数据类型的自定义地址";
+    return;
+  }
   loadCategories(type, requestId);
   loadVersion(type, requestId);
 }, { immediate: true });
@@ -241,18 +299,36 @@ onBeforeUnmount(() => {
         <section class="panel builder" aria-label="规则集生成器">
         <div class="section-head"><h2>选择规则</h2></div>
         <div class="field">
-          <div class="label-row"><strong>数据源</strong></div>
+          <div class="label-row"><strong>数据类型</strong></div>
           <div class="segmented" aria-label="数据类型">
             <button type="button" :class="{ active: sourceType === 'geosite' }" :aria-pressed="sourceType === 'geosite'" @click="sourceType = 'geosite'">Geosite · 域名</button>
             <button type="button" :class="{ active: sourceType === 'geoip' }" :aria-pressed="sourceType === 'geoip'" @click="sourceType = 'geoip'">GeoIP · IP 段</button>
           </div>
         </div>
         <div class="field">
+          <div class="label-row"><strong>数据来源</strong></div>
+          <div class="source-options" aria-label="数据来源">
+            <button type="button" :class="{ active: provider === 'loyalsoldier' }" :aria-pressed="provider === 'loyalsoldier'" @click="provider = 'loyalsoldier'">Loyalsoldier</button>
+            <button type="button" :class="{ active: provider === 'v2fly' }" :aria-pressed="provider === 'v2fly'" @click="provider = 'v2fly'">V2Fly</button>
+            <button type="button" :class="{ active: provider === 'custom' }" :aria-pressed="provider === 'custom'" @click="provider = 'custom'">自定义</button>
+          </div>
+          <form v-if="provider === 'custom'" class="custom-source" @submit.prevent="applyCustom">
+            <label for="custom-geosite">Geosite 文件 URL</label>
+            <input id="custom-geosite" class="input" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/geosite.dat"
+              :value="customDraft.geosite" @input="customDraft.geosite = $event.target.value; customError = ''">
+            <label for="custom-geoip">GeoIP 文件 URL</label>
+            <input id="custom-geoip" class="input" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/geoip.dat"
+              :value="customDraft.geoip" @input="customDraft.geoip = $event.target.value; customError = ''">
+            <div class="custom-actions"><button type="submit">应用地址</button><span>{{ activeCustomUrl && customDraft[sourceType].trim() === activeCustomUrl ? '当前类型已应用' : '可只填写需要使用的一种' }}</span></div>
+            <p v-if="customError" class="custom-error" role="alert">{{ customError }}</p>
+          </form>
+        </div>
+        <div class="field">
           <div class="label-row"><label for="category-trigger">分类</label><span class="hint">{{ categoriesLoading ? '加载中…' : categories.length + ' 个分类' }}</span></div>
           <div ref="picker" class="picker">
-            <button id="category-trigger" ref="pickerTrigger" class="picker-trigger" type="button"
+            <button id="category-trigger" ref="pickerTrigger" class="picker-trigger" type="button" :disabled="sourceParameters === null"
               :aria-expanded="categoryOpen" aria-controls="category-options" aria-haspopup="listbox" @click="togglePicker">
-              <span :class="{ placeholder: !category }">{{ category || (categoriesLoading ? '正在读取分类…' : '请选择分类') }}</span>
+              <span :class="{ placeholder: !category }">{{ category || (sourceParameters === null ? '请先应用自定义地址' : categoriesLoading ? '正在读取分类…' : '请选择分类') }}</span>
               <svg class="picker-chevron" aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="m4 7 6 6 6-6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <Transition name="picker-pop"><div v-if="categoryOpen" id="category-options" class="picker-menu">
@@ -309,6 +385,7 @@ onBeforeUnmount(() => {
           <p class="status" role="status">{{ message || (sourceType === 'geosite' && format === 'mrs' ? 'MRS 仅包含完整域名和域名后缀；keyword / regexp 会跳过。' : '') }}</p>
         </section>
         <section class="panel source-panel"><h2>当前数据源</h2><div class="meta-list">
+          <div class="meta-item"><span class="meta-label">来源</span><strong class="meta-value">{{ providerName }}</strong></div>
           <div class="meta-item"><span class="meta-label">数据文件</span><strong class="meta-value">{{ sourceName }}</strong></div>
           <div class="meta-item"><span class="meta-label">版本日期</span><strong class="meta-value">{{ versionText }}</strong><p class="subtle">{{ versionNote }}</p></div>
           <div class="meta-item"><span class="meta-label">更新频率</span><strong class="meta-value">每小时检查</strong></div>

@@ -5,6 +5,10 @@ import { domainMrs, ipMrs } from "./mrs.js";
 const DEFAULT_SITE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat";
 const DEFAULT_IP = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat";
 const RELEASE_API = "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest";
+const V2FLY_SITE = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat";
+const V2FLY_IP = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat";
+const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community/releases/latest";
+const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const CACHE_SECONDS = 3600;
 
@@ -28,14 +32,37 @@ function selection(raw, type) {
   return { category: parts[0], include, exclude };
 }
 
-function sourceUrl(type, env) {
-  return type === "geoip" ? env.GEOIP_URL || DEFAULT_IP : env.SOURCE_URL || DEFAULT_SITE;
+function checkedUrl(value) {
+  if (typeof value !== "string" || value.length > 2048) throw new Error("Invalid source URL");
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username || url.password || url.hash ||
+    url.hostname === "localhost" || url.hostname.endsWith(".localhost") ||
+    url.hostname.endsWith(".local") || /^\d+(?:\.\d+){3}$/.test(url.hostname) || url.hostname.startsWith("[")) {
+    throw new Error("Source URL must use a public HTTPS hostname without credentials or fragments");
+  }
+  return url;
 }
 
-function checkedUrl(value) {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username || url.password) throw new Error("Source URL must use HTTPS");
-  return url;
+function sourceChoice(type, env, params, origin) {
+  const id = params.get("source") || "loyalsoldier";
+  if (id === "loyalsoldier") {
+    const value = type === "geoip" ? env.GEOIP_URL || DEFAULT_IP : env.SOURCE_URL || DEFAULT_SITE;
+    const original = type === "geoip" ? DEFAULT_IP : DEFAULT_SITE;
+    return { id, url: value, releaseApi: value === original ? RELEASE_API : null, asset: type === "geoip" ? "geoip.dat" : "geosite.dat" };
+  }
+  if (id === "v2fly") {
+    return { id, url: type === "geoip" ? V2FLY_IP : V2FLY_SITE,
+      releaseApi: type === "geoip" ? V2FLY_IP_API : V2FLY_SITE_API,
+      asset: type === "geoip" ? "geoip.dat" : "dlc.dat" };
+  }
+  if (id === "custom") {
+    const value = params.get("url");
+    if (!value) throw new Error("Custom source URL is required");
+    const parsed = checkedUrl(value);
+    if (parsed.hostname === new URL(origin).hostname) throw new Error("Custom source cannot point to this Worker");
+    return { id, url: parsed.href, releaseApi: null, asset: parsed.pathname.split("/").pop() || "custom.dat" };
+  }
+  throw new Error("Unknown source");
 }
 
 async function sourceBytes(value) {
@@ -97,25 +124,22 @@ function renderIp(data, format) {
   return { body: format === "clash" ? yaml(rules) : `${rules.join("\n")}${rules.length ? "\n" : ""}`, count: rules.length, skipped: 0 };
 }
 
-async function version(type, env) {
-  const url = sourceUrl(type, env);
-  const defaultUrl = type === "geoip" ? DEFAULT_IP : DEFAULT_SITE;
-  if (url === defaultUrl) {
+async function version(choice) {
+  if (choice.releaseApi) {
     try {
-      const response = await fetch(RELEASE_API, {
+      const response = await fetch(choice.releaseApi, {
         headers: { "accept": "application/vnd.github+json", "user-agent": "geosite2rule-worker" },
         cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS }
       });
       if (response.ok) {
         const release = await response.json();
-        const filename = type === "geoip" ? "geoip.dat" : "geosite.dat";
-        const asset = release.assets?.find(item => item.name === filename);
+        const asset = release.assets?.find(item => item.name === choice.asset);
         const date = asset?.updated_at || release.published_at;
         if (date && !Number.isNaN(Date.parse(date))) return { date, source: "release", version: release.tag_name || null };
       }
     } catch (error) { console.warn("Release date unavailable", error); }
   }
-  const response = await fetch(checkedUrl(url), { method: "HEAD", cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
+  const response = await fetch(checkedUrl(choice.url), { method: "HEAD", cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
   if (!response.ok) throw new Error(`Source metadata returned HTTP ${response.status}`);
   const header = response.headers.get("last-modified");
   await response.body?.cancel();
@@ -150,6 +174,9 @@ export default {
 
     const type = ruleMatch ? (ruleMatch[1] ? "geoip" : "geosite") : attributeMatch ? "geosite" : url.searchParams.get("type") || "geosite";
     if (type !== "geosite" && type !== "geoip") return json({ error: "Invalid data type" }, 400);
+    let choice;
+    try { choice = sourceChoice(type, env, url.searchParams, url.origin); }
+    catch (error) { return json({ error: error.message }, 400); }
     const format = ruleMatch?.[2];
     const extension = ruleMatch?.[4];
     if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : extension !== "list" && extension !== "txt")) {
@@ -164,8 +191,11 @@ export default {
     }
 
     const cache = globalThis.caches?.default;
-    const cachePath = isCategories || isVersion ? url.pathname + `?type=${type}` : url.pathname;
-    const cacheKey = new Request(url.origin + cachePath);
+    const cacheUrl = new URL(url.pathname, url.origin);
+    if (isCategories || isVersion) cacheUrl.searchParams.set("type", type);
+    if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
+    if (choice.id === "custom") cacheUrl.searchParams.set("url", choice.url);
+    const cacheKey = new Request(cacheUrl);
     if (cache) {
       const hit = await cache.match(cacheKey);
       if (hit) return forHead(request, hit);
@@ -174,9 +204,9 @@ export default {
     try {
       let response;
       if (isVersion) {
-        response = json(await version(type, env));
+        response = json(await version(choice));
       } else {
-        const bytes = await sourceBytes(sourceUrl(type, env));
+        const bytes = await sourceBytes(choice.url);
         if (isCategories) {
           response = json({ categories: type === "geoip" ? listIpCategories(bytes) : listCategories(bytes) });
         } else if (attributeMatch) {
