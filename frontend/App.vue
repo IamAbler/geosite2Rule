@@ -227,37 +227,34 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <nav class="topbar">
-    <div class="shell">
-      <a class="brand" href="/"><span class="brand-mark">↗</span> geosite2Rule</a>
-      <a class="top-link" href="https://github.com/IamAbler/geosite2Rule" target="_blank" rel="noopener">GitHub ↗</a>
-    </div>
-  </nav>
+  <nav class="topbar"><div class="shell">
+    <a class="brand" href="/">geosite<span>2</span>rule<span class="brand-period">.</span></a>
+    <a class="top-link" href="https://github.com/IamAbler/geosite2Rule" target="_blank" rel="noopener">查看源码 <span aria-hidden="true">↗</span></a>
+  </div></nav>
   <main class="shell">
-    <header>
-      <span class="eyebrow"><span class="dot"></span> RULESET CONVERTER</span>
-      <h1>把地理数据，<br>变成你需要的规则。</h1>
-      <p>选择分类与格式，生成可直接订阅的 Clash / Mihomo、Surge 规则集。支持 Geosite、GeoIP 和 MRS。</p>
+    <header class="intro">
+      <h1>规则集转换</h1>
+      <p class="intro-copy">选择分类与格式，生成可直接订阅的规则地址。</p>
     </header>
     <div class="workspace">
       <section class="panel builder" aria-label="规则集生成器">
-        <div class="section-head"><h2>创建规则集</h2><span class="step">01 / CONFIGURE</span></div>
+        <div class="section-head"><h2>选择规则</h2></div>
         <div class="field">
-          <div class="label-row"><strong>数据类型</strong><span class="hint">选择源数据库</span></div>
+          <div class="label-row"><strong>数据源</strong></div>
           <div class="segmented" aria-label="数据类型">
             <button type="button" :class="{ active: sourceType === 'geosite' }" :aria-pressed="sourceType === 'geosite'" @click="sourceType = 'geosite'">Geosite · 域名</button>
             <button type="button" :class="{ active: sourceType === 'geoip' }" :aria-pressed="sourceType === 'geoip'" @click="sourceType = 'geoip'">GeoIP · IP 段</button>
           </div>
         </div>
         <div class="field">
-          <div class="label-row"><label for="category-trigger">选择分类</label><span class="hint">{{ categoriesLoading ? '加载中…' : categories.length + ' 个分类' }}</span></div>
+          <div class="label-row"><label for="category-trigger">分类</label><span class="hint">{{ categoriesLoading ? '加载中…' : categories.length + ' 个分类' }}</span></div>
           <div ref="picker" class="picker">
             <button id="category-trigger" ref="pickerTrigger" class="picker-trigger" type="button"
               :aria-expanded="categoryOpen" aria-controls="category-options" aria-haspopup="listbox" @click="togglePicker">
               <span :class="{ placeholder: !category }">{{ category || (categoriesLoading ? '正在读取分类…' : '请选择分类') }}</span>
               <span class="picker-chevron" aria-hidden="true">⌄</span>
             </button>
-            <div v-if="categoryOpen" id="category-options" class="picker-menu">
+            <Transition name="picker-pop"><div v-if="categoryOpen" id="category-options" class="picker-menu">
               <div class="picker-search-wrap">
                 <input id="category-search" ref="pickerSearch" class="input picker-search" type="search" autocomplete="off"
                   role="combobox" aria-controls="category-list" :aria-expanded="categoryOpen" aria-autocomplete="list"
@@ -276,13 +273,13 @@ onBeforeUnmount(() => {
               </template>
               </div>
               <div v-if="category" class="picker-footer"><button type="button" @click="clearCategory">清除当前选择</button></div>
-            </div>
+            </div></Transition>
           </div>
           <p class="helper" v-if="categoryError">{{ categoryError }}</p>
           <p class="helper" v-else>{{ category ? '当前分类：' + category + ' · 点击上方可更换' : '展开后搜索并选择分类' }}</p>
         </div>
         <div v-if="sourceType === 'geosite'" class="field">
-          <div class="label-row"><strong>属性筛选</strong><span class="hint">点击切换 包含 → 排除 → 取消</span></div>
+          <div class="label-row"><strong>属性</strong><span class="hint">包含 → 排除 → 取消</span></div>
           <div class="attributes">
             <span v-if="attributesLoading" class="empty">读取属性中…</span>
             <span v-else-if="attributeError" class="empty">{{ attributeError }}</span>
@@ -292,29 +289,30 @@ onBeforeUnmount(() => {
           </div>
           <p class="helper">包含生成 <code>@属性</code>，排除生成 <code>@-属性</code>。</p>
         </div>
-        <div class="output">
-          <div class="label-row"><strong>输出格式</strong><span class="hint">选择订阅客户端</span></div>
+      </section>
+      <aside class="side">
+        <section class="panel output">
+          <div class="section-head"><h2>生成地址</h2></div>
+          <div class="label-row"><strong>格式</strong></div>
           <div class="output-grid">
             <button v-for="item in formats" :key="item.id" type="button" :class="['format', { active: format === item.id }]"
               :aria-pressed="format === item.id" @click="format = item.id">{{ item.title }}<small>{{ item.detail }}</small></button>
           </div>
           <div class="result">
-            <p class="result-label">订阅地址</p><p class="url">{{ ruleUrl || '选择分类后生成地址' }}</p>
+            <p class="result-label">订阅地址</p><p class="url" :class="{ 'url-empty': !ruleUrl }">{{ ruleUrl || '选择分类后在这里获取地址' }}</p>
             <div class="actions"><button class="primary" type="button" :disabled="!ruleUrl" @click="copyUrl">复制地址</button>
               <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : '预览规则' }}</a></div>
           </div>
           <p class="status" role="status">{{ message || (sourceType === 'geosite' && format === 'mrs' ? 'MRS 仅包含完整域名和域名后缀；keyword / regexp 会跳过。' : '') }}</p>
-        </div>
-      </section>
-      <aside class="side">
-        <section class="panel"><h2>当前数据源</h2><div class="meta-list">
+        </section>
+        <section class="panel source-panel"><h2>当前数据源</h2><div class="meta-list">
           <div class="meta-item"><span class="meta-label">数据文件</span><strong class="meta-value">{{ sourceName }}</strong></div>
           <div class="meta-item"><span class="meta-label">版本日期</span><strong class="meta-value">{{ versionText }}</strong><p class="subtle">{{ versionNote }}</p></div>
           <div class="meta-item"><span class="meta-label">更新频率</span><strong class="meta-value">每小时检查</strong></div>
         </div></section>
-        <section class="panel"><h2>接入提示</h2><p class="subtle">{{ format === 'surge' ? '将以下规则加入 Surge 配置的 [Rule] 区块。' : '将以下配置加入 Clash / Mihomo 的规则提供者。' }}</p><pre class="snippet">{{ snippet }}</pre></section>
+        <section class="panel usage-panel"><h2>配置示例</h2><p class="subtle">{{ format === 'surge' ? '加入 Surge 配置的 [Rule] 区块' : '加入 Clash / Mihomo 的规则提供者' }}</p><pre class="snippet">{{ snippet }}</pre></section>
       </aside>
     </div>
   </main>
-  <footer><div class="shell footer-inner"><span>geosite2Rule · 开源规则集转换工具</span><span>由 Cloudflare Workers 提供服务</span></div></footer>
+  <footer><div class="shell footer-inner"><span>geosite2rule</span><span>数据由 Loyalsoldier/v2ray-rules-dat 提供</span></div></footer>
 </template>
