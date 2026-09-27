@@ -313,9 +313,9 @@ onBeforeUnmount(() => {
             <div class="field">
               <div class="label-row"><strong>数据来源</strong></div>
               <div class="source-options" aria-label="数据来源">
-                <fluent-button size="small" :appearance="provider === 'loyalsoldier' ? 'primary' : 'outline'" :aria-pressed="provider === 'loyalsoldier'" @click="provider = 'loyalsoldier'">Loyalsoldier</fluent-button>
-                <fluent-button size="small" :appearance="provider === 'v2fly' ? 'primary' : 'outline'" :aria-pressed="provider === 'v2fly'" @click="provider = 'v2fly'">V2Fly</fluent-button>
-                <fluent-button size="small" :appearance="provider === 'custom' ? 'primary' : 'outline'" :aria-pressed="provider === 'custom'" @click="provider = 'custom'">自定义</fluent-button>
+                <fluent-button :appearance="provider === 'loyalsoldier' ? 'primary' : 'outline'" :aria-pressed="provider === 'loyalsoldier'" @click="provider = 'loyalsoldier'">Loyalsoldier</fluent-button>
+                <fluent-button :appearance="provider === 'v2fly' ? 'primary' : 'outline'" :aria-pressed="provider === 'v2fly'" @click="provider = 'v2fly'">V2Fly</fluent-button>
+                <fluent-button :appearance="provider === 'custom' ? 'primary' : 'outline'" :aria-pressed="provider === 'custom'" @click="provider = 'custom'">自定义</fluent-button>
               </div>
               <form v-if="provider === 'custom'" class="custom-source" @submit.prevent="applyCustom">
                 <label for="custom-geosite">Geosite 文件 URL</label>
