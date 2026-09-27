@@ -12,7 +12,7 @@ npm run deploy
 npm run preview   # 发布当前分支的 Cloudflare Preview
 ```
 
-Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。部署前可在 `wrangler.jsonc` 修改默认来源的 `SOURCE_URL` 与 `GEOIP_URL`。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。无需 KV、R2 或数据库。
+Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。无需 KV、R2 或数据库。
 
 仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
 

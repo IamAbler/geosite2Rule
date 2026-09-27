@@ -2,8 +2,10 @@ import { listCategories, listAttributes, readCategory } from "./geosite.js";
 import { listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
 
-const DEFAULT_SITE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat";
-const DEFAULT_IP = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat";
+const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
+const DEFAULT_IP = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat";
+const FALLBACK_SITE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat";
+const FALLBACK_IP = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat";
 const RELEASE_API = "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest";
 const V2FLY_SITE = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat";
 const V2FLY_IP = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat";
@@ -48,7 +50,8 @@ function sourceChoice(type, env, params, origin) {
   if (id === "loyalsoldier") {
     const value = type === "geoip" ? env.GEOIP_URL || DEFAULT_IP : env.SOURCE_URL || DEFAULT_SITE;
     const original = type === "geoip" ? DEFAULT_IP : DEFAULT_SITE;
-    return { id, url: value, releaseApi: value === original ? RELEASE_API : null, asset: type === "geoip" ? "geoip.dat" : "geosite.dat" };
+    return { id, url: value, fallbackUrl: value === original ? (type === "geoip" ? FALLBACK_IP : FALLBACK_SITE) : null,
+      releaseApi: value === original ? RELEASE_API : null, asset: type === "geoip" ? "geoip.dat" : "geosite.dat" };
   }
   if (id === "v2fly") {
     return { id, url: type === "geoip" ? V2FLY_IP : V2FLY_SITE,
@@ -65,7 +68,7 @@ function sourceChoice(type, env, params, origin) {
   throw new Error("Unknown source");
 }
 
-async function sourceBytes(value) {
+async function fetchSourceBytes(value) {
   const response = await fetch(checkedUrl(value), { cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
   if (!response.ok) throw new Error(`Source returned HTTP ${response.status}`);
   const length = Number(response.headers.get("content-length"));
@@ -95,6 +98,16 @@ async function sourceBytes(value) {
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return bytes;
+}
+
+async function sourceBytes(choice) {
+  try {
+    return await fetchSourceBytes(choice.url);
+  } catch (error) {
+    if (!choice.fallbackUrl || error.message === "Source exceeds 32 MiB limit") throw error;
+    console.warn("Primary source unavailable; using GitHub fallback", error);
+    return fetchSourceBytes(choice.fallbackUrl);
+  }
 }
 
 function yaml(rules) {
@@ -232,7 +245,7 @@ export default {
       if (isVersion) {
         response = json(await version(choice));
       } else {
-        const bytes = await sourceBytes(choice.url);
+        const bytes = await sourceBytes(choice);
         if (isCategories) {
           response = json({ categories: type === "geoip" ? listIpCategories(bytes) : listCategories(bytes) });
         } else if (attributeMatch) {
