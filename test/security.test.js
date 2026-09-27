@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.js";
+import { nextDailyRefreshAt } from "../src/cache.js";
 
 const encoder = new TextEncoder();
 
@@ -60,6 +61,11 @@ function customPath(url, category = "test") {
   return `/rules/clash/${category}.yaml?source=custom&url=${encodeURIComponent(url)}`;
 }
 
+function sourceMetadata(sha256) {
+  const checkedAt = Date.now();
+  return { sha256, checkedAt, freshUntil: nextDailyRefreshAt(checkedAt) };
+}
+
 test("rejects traversal-like names, empty exclusions, and unsafe source URLs before fetching", async () => {
   const invalid = [
     customPath("https://public.test.org/data.dat", ".."),
@@ -106,6 +112,7 @@ test("allows validated public redirects and converts valid rules", async () => {
   assert.equal(calls.length, 2);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("x-cache-layer"), "convert");
+  assert.match(response.headers.get("cache-control"), /^public, max-age=\d+, stale-while-revalidate=86400, stale-if-error=86400$/);
   assert.match(response.headers.get("server-timing"), /^worker;dur=\d+(?:\.\d+)?;desc="wall time"$/);
 });
 
@@ -131,7 +138,7 @@ test("reports edge hits without persisting the previous response label", async (
 test("reports D1 hits without downloading a source", async () => {
   const body = new TextEncoder().encode("payload:\n  - DOMAIN,example.org\n");
   const env = {
-    RULE_CACHE: { async get() { return { sha256: "a".repeat(64), checkedAt: Date.now() }; } },
+    RULE_CACHE: { async get() { return sourceMetadata("a".repeat(64)); } },
     RULE_DB: { prepare(sql) { return { bind() { return {
       async first() { return { headers: JSON.stringify({ "content-type": "application/yaml" }), part_count: 1, byte_length: body.length }; },
       async all() { return { results: [{ part: 0, body: [...body] }] }; }
@@ -142,6 +149,7 @@ test("reports D1 hits without downloading a source", async () => {
   }, env);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-cache-layer"), "d1");
+  assert.match(response.headers.get("cache-control"), /^public, max-age=\d+, stale-while-revalidate=86400, stale-if-error=86400$/);
   assert.equal(calls.length, 0);
 });
 
@@ -151,7 +159,7 @@ test("reuses parsed source data for separate D1 misses in one isolate", async ()
   let dbReads = 0;
   const env = {
     SOURCE_URL: source,
-    RULE_CACHE: { async get() { return { sha256: "a".repeat(64), checkedAt: Date.now() }; } },
+    RULE_CACHE: { async get() { return sourceMetadata("a".repeat(64)); } },
     RULE_DB: {
       prepare() {
         return { bind() { return {
@@ -168,6 +176,83 @@ test("reuses parsed source data for separate D1 misses in one isolate", async ()
   assert.equal(second.response.status, 200);
   assert.equal(first.calls.length + second.calls.length, 1);
   assert.ok(dbReads >= 2);
+});
+
+test("coalesces concurrent D1 misses onto one source load", async () => {
+  const source = `https://public.test.org/${Date.now()}/concurrent.dat`;
+  const bytes = siteDataWithCategories();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return new Response(bytes);
+  };
+  const env = {
+    SOURCE_URL: source,
+    RULE_CACHE: { async get() { return sourceMetadata("a".repeat(64)); } },
+    RULE_DB: {
+      prepare() {
+        return { bind() { return {
+          async first() { return null; },
+          async run() { return {}; }
+        }; } };
+      },
+      async batch() { return []; }
+    }
+  };
+  const pending = [];
+  const ctx = { waitUntil(promise) { pending.push(promise); } };
+  try {
+    const responses = await Promise.all(["test", "other"].map(category =>
+      worker.fetch(new Request(`https://worker.test/rules/clash/${category}.yaml`), env, ctx)));
+    await Promise.all(pending);
+    assert.deepEqual(responses.map(response => response.status), [200, 200]);
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("coalesces simultaneous daily source metadata refreshes", async () => {
+  const source = `https://public.test.org/${Date.now()}/daily-refresh.dat`;
+  const bytes = siteDataWithCategories();
+  let sourceReads = 0;
+  let metadataWrites = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    sourceReads++;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return new Response(bytes);
+  };
+  const env = {
+    SOURCE_URL: source,
+    RULE_CACHE: {
+      async get() { return null; },
+      async put() { metadataWrites++; }
+    },
+    RULE_DB: {
+      prepare() {
+        return { bind() { return {
+          async first() { return null; },
+          async run() { return {}; }
+        }; } };
+      },
+      async batch() { return []; }
+    }
+  };
+  const pending = [];
+  const ctx = { waitUntil(promise) { pending.push(promise); } };
+  try {
+    const responses = await Promise.all(["test", "other"].map(category =>
+      worker.fetch(new Request(`https://worker.test/rules/clash/${category}.yaml`), env, ctx)));
+    await Promise.all(pending);
+    assert.deepEqual(responses.map(response => response.status), [200, 200]);
+    assert.equal(sourceReads, 1);
+    assert.equal(metadataWrites, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("rejects unknown attributes and conversions with no supported rules", async () => {

@@ -1,7 +1,7 @@
 import { indexSiteCategories, listCategories, listAttributes, readCategory } from "./geosite.js";
 import { indexIpCategories, listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
-import { CACHE_VERSION, getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
+import { CACHE_VERSION, dailyCachePolicy, getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
 import { checkedUrl, validAttributeName, validCategoryName } from "./validation.js";
 
 const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
@@ -15,12 +15,14 @@ const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community
 const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_REDIRECTS = 5;
-const CACHE_SECONDS = 3600;
 const DOMAIN_VALUE = /^[\p{L}\p{N}_](?:[\p{L}\p{N}_-]{0,61}[\p{L}\p{N}_])?(?:\.[\p{L}\p{N}_](?:[\p{L}\p{N}_-]{0,61}[\p{L}\p{N}_])?)*$/u;
 const MAX_SOURCE_CACHE_BYTES = 48 * 1024 * 1024;
 const MAX_SOURCE_CACHE_ENTRIES = 2;
 const sourceCache = new Map();
 const pendingSources = new Map();
+const pendingSourceBytes = new Map();
+const pendingMetadataRefreshes = new Map();
+const pendingMetadataWrites = new Map();
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
@@ -48,7 +50,7 @@ async function fetchPublic(value, { method = "GET", headers, blockedHostname } =
   let url = checkedUrl(value, blockedHostname);
   for (let hop = 0; hop <= MAX_SOURCE_REDIRECTS; hop++) {
     const response = await fetch(url, { method, headers, redirect: "manual",
-      cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
+      cf: { cacheEverything: true, cacheTtl: dailyCachePolicy().maxAge } });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
     const location = response.headers.get("location");
     await response.body?.cancel();
@@ -122,18 +124,31 @@ async function fetchSourceBytes(value, blockedHostname) {
     lastModified: response.headers.get("last-modified") };
 }
 
-async function sourceBytes(choice) {
-  try {
-    return await fetchSourceBytes(choice.url, choice.blockedHostname);
-  } catch (error) {
-    if (!choice.fallbackUrl || error.message === "Source exceeds 32 MiB limit") throw error;
-    console.warn("Primary source unavailable; using GitHub fallback", error);
-    return fetchSourceBytes(choice.fallbackUrl, choice.blockedHostname);
-  }
+function sourceKey(choice, type) {
+  return `${type}:${choice.url}`;
+}
+
+async function sourceBytes(choice, type) {
+  const key = sourceKey(choice, type);
+  if (pendingSourceBytes.has(key)) return pendingSourceBytes.get(key);
+  const pending = (async () => {
+    let result;
+    try {
+      result = await fetchSourceBytes(choice.url, choice.blockedHostname);
+    } catch (error) {
+      if (!choice.fallbackUrl || error.message === "Source exceeds 32 MiB limit") throw error;
+      console.warn("Primary source unavailable; using GitHub fallback", error);
+      result = await fetchSourceBytes(choice.fallbackUrl, choice.blockedHostname);
+    }
+    return { ...result, checkedAt: Date.now() };
+  })();
+  pendingSourceBytes.set(key, pending);
+  try { return await pending; }
+  finally { if (pendingSourceBytes.get(key) === pending) pendingSourceBytes.delete(key); }
 }
 
 async function sourceData(choice, type, fetched) {
-  const key = `${type}:${choice.url}`;
+  const key = sourceKey(choice, type);
   const cached = sourceCache.get(key);
   if (cached && !fetched) {
     sourceCache.delete(key);
@@ -142,12 +157,23 @@ async function sourceData(choice, type, fetched) {
       return cached;
     }
   }
-  if (!fetched && pendingSources.has(key)) return pendingSources.get(key);
+  if (pendingSources.has(key)) return pendingSources.get(key);
   const pending = (async () => {
-    const bytes = (fetched || await sourceBytes(choice)).bytes;
-    const index = type === "geoip" ? indexIpCategories(bytes) : indexSiteCategories(bytes);
-    const data = { bytes, index, expiresAt: Date.now() + CACHE_SECONDS * 1000 };
-    if (bytes.byteLength <= MAX_SOURCE_CACHE_BYTES) {
+    let loaded = fetched || await sourceBytes(choice, type);
+    let expiresAt = dailyCachePolicy(loaded.checkedAt).expiresAt;
+    if (expiresAt <= Date.now()) {
+      loaded = await sourceBytes(choice, type);
+      expiresAt = dailyCachePolicy(loaded.checkedAt).expiresAt;
+    }
+    let index = type === "geoip" ? indexIpCategories(loaded.bytes) : indexSiteCategories(loaded.bytes);
+    if (expiresAt <= Date.now()) {
+      loaded = await sourceBytes(choice, type);
+      index = type === "geoip" ? indexIpCategories(loaded.bytes) : indexSiteCategories(loaded.bytes);
+      expiresAt = dailyCachePolicy(loaded.checkedAt).expiresAt;
+    }
+    const data = { bytes: loaded.bytes, index, lastModified: loaded.lastModified, checkedAt: loaded.checkedAt,
+      expiresAt, digestPromise: null };
+    if (loaded.bytes.byteLength <= MAX_SOURCE_CACHE_BYTES && expiresAt > Date.now()) {
       sourceCache.set(key, data);
       let total = 0;
       for (const item of sourceCache.values()) total += item.bytes.byteLength;
@@ -159,9 +185,37 @@ async function sourceData(choice, type, fetched) {
     }
     return data;
   })();
-  if (!fetched) pendingSources.set(key, pending);
+  pendingSources.set(key, pending);
   try { return await pending; }
   finally { if (pendingSources.get(key) === pending) pendingSources.delete(key); }
+}
+
+function sourceDigest(source) {
+  if (!source.digestPromise) source.digestPromise = sha256(source.bytes);
+  return source.digestPromise;
+}
+
+async function persistSourceMetadata(env, key, source, sha) {
+  const writeKey = `${key}:${sha}`;
+  if (pendingMetadataWrites.has(writeKey)) return pendingMetadataWrites.get(writeKey);
+  const pending = putSourceMetadata(env.RULE_CACHE, key, source.bytes, source.lastModified,
+    source.checkedAt, sha);
+  pendingMetadataWrites.set(writeKey, pending);
+  try { return await pending; }
+  finally { if (pendingMetadataWrites.get(writeKey) === pending) pendingMetadataWrites.delete(writeKey); }
+}
+
+async function refreshSourceMetadata(env, key, choice, type) {
+  if (pendingMetadataRefreshes.has(key)) return pendingMetadataRefreshes.get(key);
+  const pending = (async () => {
+    const fetched = await sourceBytes(choice, type);
+    sourceCache.delete(sourceKey(choice, type));
+    const sha = await putSourceMetadata(env.RULE_CACHE, key, fetched.bytes, fetched.lastModified, fetched.checkedAt);
+    return { fetched, sha };
+  })();
+  pendingMetadataRefreshes.set(key, pending);
+  try { return await pending; }
+  finally { if (pendingMetadataRefreshes.get(key) === pending) pendingMetadataRefreshes.delete(key); }
 }
 
 function yaml(rules) {
@@ -259,6 +313,12 @@ function responseForRules(result, format) {
   } });
 }
 
+function withCachePolicy(response, policy = dailyCachePolicy()) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", policy.header);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 function forHead(request, response) {
   return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }
@@ -326,6 +386,7 @@ async function handleRequest(request, env, ctx) {
       let sha = null;
       let fetchedSha = null;
       let fetched = null;
+      let sourceExpiresAt = null;
       const persistent = !isVersion && Boolean(env.RULE_DB);
       const metaKey = persistent ? metadataKey(type, choice) : null;
       if (persistent && metaKey) {
@@ -334,35 +395,42 @@ async function handleRequest(request, env, ctx) {
           sha = metadata.sha256;
           const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
           if (hit) {
-            if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-            return observed(request, hit, "d1", startedAt);
+            const policy = dailyCachePolicy(Date.now(), metadata.freshUntil);
+            const response = withCachePolicy(hit, policy);
+            if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+            return observed(request, response, "d1", startedAt);
           }
         } else {
-          fetched = await sourceBytes(choice);
-          sourceCache.delete(`${type}:${choice.url}`);
-          fetchedSha = await putSourceMetadata(env.RULE_CACHE, metaKey, fetched.bytes, fetched.lastModified);
+          ({ fetched, sha: fetchedSha } = await refreshSourceMetadata(env, metaKey, choice, type));
           sha = fetchedSha;
           const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
           if (hit) {
-            if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-            return observed(request, hit, "d1", startedAt);
+            const sourceExpiresAt = dailyCachePolicy(fetched.checkedAt).expiresAt;
+            const policy = dailyCachePolicy(Date.now(), sourceExpiresAt);
+            const response = withCachePolicy(hit, policy);
+            if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+            return observed(request, response, "d1", startedAt);
           }
         }
       }
       if (isVersion) {
         response = json(await version(choice));
       } else {
-        const { bytes, index } = await sourceData(choice, type, fetched);
+        const source = await sourceData(choice, type, fetched);
+        const { bytes, index } = source;
+        sourceExpiresAt = source.expiresAt;
         if (!index.size) return json({ error: "Source contains no categories" }, 422);
         if (persistent) {
-          const actualSha = fetchedSha || await sha256(bytes);
+          const actualSha = fetchedSha || await sourceDigest(source);
           if (actualSha !== sha) {
             sha = actualSha;
+            if (metaKey) await persistSourceMetadata(env, metaKey, source, actualSha);
             const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
             if (hit) {
-              if (choice.id === "custom") hit.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
-              if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-              return observed(request, hit, "d1", startedAt);
+              const policy = dailyCachePolicy(Date.now(), source.expiresAt);
+              const response = withCachePolicy(hit, policy);
+              if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+              return observed(request, response, "d1", startedAt);
             }
           }
         }
@@ -393,10 +461,11 @@ async function handleRequest(request, env, ctx) {
           response = responseForRules(result, format);
         }
       }
-      response.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
+      const policy = dailyCachePolicy(Date.now(), sourceExpiresAt);
+      response = withCachePolicy(response, policy);
       if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
       if (persistent && choice.id !== "custom" && sha) {
-        ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname), response.clone()));
+        ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname), response.clone(), policy.expiresAt));
       }
       return observed(request, response, "convert", startedAt);
     } catch (error) {
