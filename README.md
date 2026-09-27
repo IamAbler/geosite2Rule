@@ -23,8 +23,6 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 3. 搜索并选择分类。Geosite 可进一步选择要包含或排除的属性；GeoIP 没有属性。
 4. 选择客户端格式，复制生成的订阅地址，填入客户端的远程规则集配置。
 
-默认来源的部分常用分类会直接生成静态订阅地址，适合长期使用。网页会自动选择可用地址；其他分类、属性和自定义来源仍可按相同步骤生成。
-
 常用地址示例：
 
 | 用途 | Demo 地址 |
@@ -88,8 +86,6 @@ rules:
    ```
 
 5. 运行 `npm run build`，把修改后的 `wrangler.jsonc` 提交并推送到自己的 Fork。在 Cloudflare **Workers & Pages → Create application → Import a repository** 中选择这个 Fork。Worker 名称须与 `wrangler.jsonc` 的 `name` 一致；仓库根目录作为项目目录，构建命令填 `npm run build`，部署命令填 `npx wrangler deploy`。之后推送到生产分支即可自动更新。也可以直接运行 `npm run deploy` 手动发布。
-
-若修改了默认 `.dat` 地址，先运行 `npm run build:prebuilt`，再运行 `npm run build`。若希望常用静态订阅每天随上游更新，在自己 Fork 的 GitHub Actions 中启用工作流；`Refresh prebuilt rules` 会每日检查数据并在有变化时提交更新。
 
 首次部署后，打开自己的 Worker 地址，按上面的使用步骤生成订阅链接。Cloudflare 的 [Git 部署说明](https://developers.cloudflare.com/workers/ci-cd/builds/)、[KV 创建说明](https://developers.cloudflare.com/kv/get-started/) 和 [D1 创建说明](https://developers.cloudflare.com/d1/get-started/) 可供参考。
 

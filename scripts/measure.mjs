@@ -20,8 +20,7 @@ for (const path of paths) {
       const response = await fetch(new URL(path, base));
       await response.arrayBuffer();
       times.push(performance.now() - start);
-      const layer = response.headers.get("x-cache-layer") ||
-        (path.startsWith("/prebuilt/") && response.ok ? "static" : "unknown");
+      const layer = response.headers.get("x-cache-layer") || "unknown";
       layers.set(layer, (layers.get(layer) || 0) + 1);
       statuses.set(response.status, (statuses.get(response.status) || 0) + 1);
     } catch (error) {

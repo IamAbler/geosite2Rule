@@ -25,7 +25,6 @@ const attributeModes = ref({});
 const attributesLoading = ref(false);
 const attributeError = ref("");
 const message = ref("");
-const prebuiltPaths = ref(new Map());
 
 let sourceRequest = 0;
 let attributeRequest = 0;
@@ -69,16 +68,11 @@ function endpoint(path, type = null) {
 const selectedAttributes = computed(() => Object.entries(attributeModes.value).filter(([, mode]) => mode));
 const ruleUrl = computed(() => {
   if (!category.value || sourceParameters.value === null) return "";
-  if (provider.value === "loyalsoldier" && !selectedAttributes.value.length) {
-    const key = `${sourceType.value}/${format.value}/${category.value}`;
-    const prebuilt = prebuiltPaths.value.get(key);
-    if (prebuilt) return location.origin + prebuilt;
-  }
   let name = category.value;
   if (sourceType.value === "geosite") {
-    for (const [attribute, mode] of selectedAttributes.value) {
-      name += "@" + (mode === "exclude" ? "-" : "") + attribute;
-    }
+    const include = selectedAttributes.value.filter(([, mode]) => mode === "include").map(([attribute]) => attribute).sort();
+    const exclude = selectedAttributes.value.filter(([, mode]) => mode === "exclude").map(([attribute]) => attribute).sort();
+    name += [...include, ...exclude.map(attribute => "-" + attribute)].map(attribute => "@" + attribute).join("");
   }
   const path = sourceType.value === "geoip" ? "/rules/geoip/" : "/rules/";
   const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : ".list";
@@ -282,14 +276,6 @@ watch([format, selectedAttributes], () => { message.value = ""; });
 onMounted(() => {
   document.addEventListener("pointerdown", closeOnOutside);
   document.addEventListener("focusin", closeOnOutside);
-  fetch("/prebuilt/manifest.json").then(response => response.ok ? response.json() : null).then(manifest => {
-    if (!Array.isArray(manifest?.entries)) return;
-    prebuiltPaths.value = new Map(manifest.entries.filter(entry =>
-      typeof entry.path === "string" && entry.path.startsWith("/prebuilt/") &&
-      ["geosite", "geoip"].includes(entry.type) &&
-      formats.some(format => format.id === entry.format)
-    ).map(entry => [`${entry.type}/${entry.format}/${entry.category}`, entry.path]));
-  }).catch(() => {});
 });
 onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", closeOnOutside);
