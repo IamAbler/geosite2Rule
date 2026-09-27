@@ -14,6 +14,8 @@ npm run preview   # 发布当前分支的 Cloudflare Preview
 
 Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。部署前可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，指向其他兼容的 HTTPS 数据文件。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。无需 KV、R2 或数据库。
 
+仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
+
 ## Cloudflare Workers Git 部署配置
 
 在 Cloudflare 控制台选择 **Workers & Pages → Create application → Import a repository**，连接 `IamAbler/geosite2Rule`。生产分支选择 `main`，根目录保持仓库根目录。Worker 名称使用 `geosite2rule`，与 `wrangler.jsonc` 中的 `name` 一致。
