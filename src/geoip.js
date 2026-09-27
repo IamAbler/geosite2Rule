@@ -34,7 +34,7 @@ function ipv6(bytes) {
   return `${left}::${right}`;
 }
 
-function cidr(bytes, start, end) {
+function cidr(bytes, start, end, withString) {
   let ip;
   let prefix = 0;
   visit(bytes, start, end, item => {
@@ -44,10 +44,10 @@ function cidr(bytes, start, end) {
   if (!ip || (ip.length !== 4 && ip.length !== 16) || prefix > ip.length * 8) {
     throw new Error("Invalid GeoIP CIDR entry");
   }
-  return { value: `${ip.length === 4 ? [...ip].join(".") : ipv6(ip)}/${prefix}`, ip: Uint8Array.from(ip), prefix };
+  return { value: withString ? `${ip.length === 4 ? [...ip].join(".") : ipv6(ip)}/${prefix}` : null, ip, prefix };
 }
 
-export function readIpCategory(bytes, category) {
+export function readIpCategory(bytes, category, withStrings = true) {
   const networks = [];
   let found = false;
   let inverse = false;
@@ -55,12 +55,12 @@ export function readIpCategory(bytes, category) {
     if (entry.number !== 1 || entry.wire !== 2 || countryCode(bytes, entry.start, entry.end) !== category) return;
     found = true;
     visit(bytes, entry.start, entry.end, item => {
-      if (item.number === 2 && item.wire === 2) networks.push(cidr(bytes, item.start, item.end));
+      if (item.number === 2 && item.wire === 2) networks.push(cidr(bytes, item.start, item.end, withStrings));
       if (item.number === 3 && item.wire === 0) {
         const [value] = varint(bytes, item.start, item.end);
         inverse ||= value !== 0;
       }
     });
   });
-  return { found, inverse, cidrs: networks.map(network => network.value), networks };
+  return { found, inverse, cidrs: withStrings ? networks.map(network => network.value) : [], networks };
 }

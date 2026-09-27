@@ -253,7 +253,7 @@ export default {
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           response = json(data);
         } else if (type === "geoip") {
-          const data = readIpCategory(bytes, selected.category);
+          const data = readIpCategory(bytes, selected.category, format !== "mrs");
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           if (data.inverse) return json({ error: "Inverse GeoIP categories cannot be converted to a positive ruleset" }, 422);
           response = responseForRules(renderIp(data, format), format);

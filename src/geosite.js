@@ -31,18 +31,23 @@ function attributes(bytes, start, end) {
   return result;
 }
 
-function domain(bytes, start, end) {
+function domain(bytes, start, end, include, exclude) {
   let type = 0;
-  let value = "";
-  const attrs = new Set();
+  let valueStart = -1;
+  let valueEnd = 0;
+  const attrs = include.length || exclude.length ? new Set() : null;
   visit(bytes, start, end, item => {
     if (item.number === 1 && item.wire === 0) [type] = varint(bytes, item.start, item.end);
-    if (item.number === 2 && item.wire === 2) value = string(bytes, item.start, item.end);
-    if (item.number === 3 && item.wire === 2) {
+    if (item.number === 2 && item.wire === 2) {
+      valueStart = item.start;
+      valueEnd = item.end;
+    }
+    if (attrs && item.number === 3 && item.wire === 2) {
       for (const attr of attributes(bytes, item.start, item.end)) attrs.add(attr);
     }
   });
-  return { type, value, attrs };
+  if (attrs && (!include.every(attr => attrs.has(attr)) || !exclude.every(attr => !attrs.has(attr)))) return null;
+  return { type, value: valueStart < 0 ? "" : string(bytes, valueStart, valueEnd) };
 }
 
 export function readCategory(bytes, category, include = [], exclude = []) {
@@ -53,10 +58,8 @@ export function readCategory(bytes, category, include = [], exclude = []) {
     found = true;
     visit(bytes, site.start, site.end, item => {
       if (item.number !== 2 || item.wire !== 2) return;
-      const entry = domain(bytes, item.start, item.end);
-      if (include.every(attr => entry.attrs.has(attr)) && exclude.every(attr => !entry.attrs.has(attr))) {
-        domains.push(entry);
-      }
+      const entry = domain(bytes, item.start, item.end, include, exclude);
+      if (entry) domains.push(entry);
     });
   });
   return { found, domains };
