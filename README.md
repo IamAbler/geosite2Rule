@@ -38,6 +38,8 @@ Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供�
 
 保存后，推送到 `main` 会触发生产部署。开启预览构建后，其他分支和拉取请求会运行预览命令并生成独立的预览地址。本地预览仍使用 `npm run dev`。
 
+Worker 已在 `wrangler.jsonc` 开启请求与异常日志。遇到间歇性 5xx 时，在 Cloudflare 控制台打开 **Workers & Pages → geosite2rule → Observability**，按时间、请求路径和执行结果筛选；也可在终端运行 `npx wrangler tail geosite2rule --format=pretty` 查看实时日志。排查完毕后，可调低 `head_sampling_rate` 减少日志量。
+
 ## 接口
 
 | 地址 | 输出 | 用途 |
