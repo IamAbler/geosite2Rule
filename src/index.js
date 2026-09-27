@@ -1,6 +1,7 @@
 import { indexSiteCategories, listCategories, listAttributes, readCategory } from "./geosite.js";
 import { indexIpCategories, listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
+import { getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
 
 const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
 const DEFAULT_IP = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat";
@@ -13,11 +14,6 @@ const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community
 const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const CACHE_SECONDS = 3600;
-const KV_FRESH_SECONDS = 6 * 3600;
-const KV_RETENTION_SECONDS = 30 * 24 * 3600;
-const MAX_KV_BODY_LENGTH = 8 * 1024 * 1024;
-const MAX_KV_KEY_LENGTH = 512;
-const REFRESH_PREFIX = "refresh:";
 const MAX_SOURCE_CACHE_BYTES = 48 * 1024 * 1024;
 const MAX_SOURCE_CACHE_ENTRIES = 2;
 const sourceCache = new Map();
@@ -110,7 +106,8 @@ async function fetchSourceBytes(value) {
   } finally {
     reader.releaseLock();
   }
-  return size === bytes.length ? bytes : bytes.slice(0, size);
+  return { bytes: size === bytes.length ? bytes : bytes.slice(0, size),
+    lastModified: response.headers.get("last-modified") };
 }
 
 async function sourceBytes(choice) {
@@ -123,19 +120,19 @@ async function sourceBytes(choice) {
   }
 }
 
-async function sourceData(choice, type) {
+async function sourceData(choice, type, fetched) {
   const key = `${type}:${choice.url}`;
   const cached = sourceCache.get(key);
-  if (cached) {
+  if (cached && !fetched) {
     sourceCache.delete(key);
     if (cached.expiresAt > Date.now()) {
       sourceCache.set(key, cached);
       return cached;
     }
   }
-  if (pendingSources.has(key)) return pendingSources.get(key);
+  if (!fetched && pendingSources.has(key)) return pendingSources.get(key);
   const pending = (async () => {
-    const bytes = await sourceBytes(choice);
+    const bytes = (fetched || await sourceBytes(choice)).bytes;
     const index = type === "geoip" ? indexIpCategories(bytes) : indexSiteCategories(bytes);
     const data = { bytes, index, expiresAt: Date.now() + CACHE_SECONDS * 1000 };
     if (bytes.byteLength <= MAX_SOURCE_CACHE_BYTES) {
@@ -150,9 +147,9 @@ async function sourceData(choice, type) {
     }
     return data;
   })();
-  pendingSources.set(key, pending);
+  if (!fetched) pendingSources.set(key, pending);
   try { return await pending; }
-  finally { pendingSources.delete(key); }
+  finally { if (pendingSources.get(key) === pending) pendingSources.delete(key); }
 }
 
 function yaml(rules) {
@@ -244,7 +241,7 @@ function forHead(request, response) {
   return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }
 
-async function handleRequest(request, env, ctx, forceRefresh = false) {
+async function handleRequest(request, env, ctx) {
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
     const url = new URL(request.url);
     if (url.pathname === "/") return env.ASSETS.fetch(request);
@@ -286,39 +283,56 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
     if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
     cacheUrl.searchParams.set("source_url", choice.url);
     const cacheKey = new Request(cacheUrl);
-    const kvKey = choice.id === "loyalsoldier" ? `v1:${choice.url}:${cacheUrl.pathname}${cacheUrl.search}` : null;
-    if (!forceRefresh && cache) {
+    if (cache) {
       const hit = await cache.match(cacheKey);
       if (hit) return forHead(request, hit);
-    }
-    if (!forceRefresh && kvKey && env.RULE_CACHE && kvKey.length <= MAX_KV_KEY_LENGTH - REFRESH_PREFIX.length) {
-      try {
-        const { value, metadata } = await env.RULE_CACHE.getWithMetadata(kvKey, { type: "arrayBuffer", cacheTtl: 60 });
-        if (value && metadata?.headers) {
-          const hit = new Response(value, { headers: metadata.headers });
-          if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-          if (env.RULE_REFRESH && Date.now() - (metadata.refreshedAt || 0) >= KV_FRESH_SECONDS * 1000) {
-            const lockKey = new Request(`${url.origin}/__refresh_lock/${encodeURIComponent(kvKey)}`);
-            if (!cache || !await cache.match(lockKey)) {
-              if (cache) ctx.waitUntil(cache.put(lockKey, new Response("1", { headers: { "cache-control": "max-age=30" } })));
-              ctx.waitUntil(env.RULE_REFRESH.send({
-                path: `${url.pathname}${url.search}`, kvKey, refreshedAt: metadata.refreshedAt || 0
-              })
-                .catch(error => console.warn("Background refresh enqueue failed", error)));
-            }
-          }
-          return forHead(request, hit);
-        }
-      } catch (error) { console.warn("KV cache read unavailable", error); }
     }
 
     try {
       let response;
-      let kvCacheable = true;
+      let sha = null;
+      let fetchedSha = null;
+      let fetched = null;
+      const persistent = !isVersion && Boolean(env.RULE_DB);
+      const metaKey = persistent ? metadataKey(type, choice) : null;
+      if (persistent && metaKey) {
+        const metadata = await getSourceMetadata(env.RULE_CACHE, metaKey);
+        if (metadata) {
+          sha = metadata.sha256;
+          const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+          if (hit) {
+            if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
+            return forHead(request, hit);
+          }
+        } else {
+          fetched = await sourceBytes(choice);
+          sourceCache.delete(`${type}:${choice.url}`);
+          fetchedSha = await putSourceMetadata(env.RULE_CACHE, metaKey, fetched.bytes, fetched.lastModified);
+          sha = fetchedSha;
+          const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+          if (hit) {
+            if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
+            return forHead(request, hit);
+          }
+        }
+      }
       if (isVersion) {
         response = json(await version(choice));
       } else {
-        const { bytes, index } = await sourceData(choice, type);
+        if (persistent && !fetched) fetched = await sourceBytes(choice);
+        const { bytes, index } = await sourceData(choice, type, fetched);
+        if (persistent) {
+          const actualSha = fetchedSha || await sha256(bytes);
+          if (actualSha !== sha) {
+            sha = actualSha;
+            const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+            if (hit) {
+              if (choice.id === "custom") hit.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
+              if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
+              return forHead(request, hit);
+            }
+          }
+        }
         if (isCategories) {
           response = json({ categories: type === "geoip" ? listIpCategories(bytes, index) : listCategories(bytes, index) });
         } else if (attributeMatch) {
@@ -330,28 +344,18 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           if (data.inverse) return json({ error: "Inverse GeoIP categories cannot be converted to a positive ruleset" }, 422);
           const result = renderIp(data, format);
-          kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
           response = responseForRules(result, format);
         } else {
           const data = readCategory(bytes, selected.category, selected.include, selected.exclude, index);
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           const result = renderSite(data.domains, format);
-          kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
           response = responseForRules(result, format);
         }
       }
       response.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
-      if (cache && !forceRefresh) ctx.waitUntil(cache.put(cacheKey, response.clone()));
-      if (kvCacheable && kvKey && env.RULE_CACHE && kvKey.length <= MAX_KV_KEY_LENGTH - REFRESH_PREFIX.length) {
-        const headers = Object.fromEntries(response.headers);
-        const refreshedAt = Date.now();
-        const write = env.RULE_CACHE.put(kvKey, response.clone().body, {
-          expirationTtl: KV_RETENTION_SECONDS, metadata: { headers, refreshedAt }
-        }).then(() => env.RULE_CACHE.put(`${REFRESH_PREFIX}${kvKey}`, String(refreshedAt), {
-          expirationTtl: KV_RETENTION_SECONDS
-        })).catch(error => console.warn("KV cache write unavailable", error));
-        if (forceRefresh) await write;
-        else ctx.waitUntil(write);
+      if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+      if (persistent && choice.id !== "custom" && sha) {
+        ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname), response.clone()));
       }
       return forHead(request, response);
     } catch (error) {
@@ -364,18 +368,5 @@ async function handleRequest(request, env, ctx, forceRefresh = false) {
 export default {
   fetch(request, env, ctx) {
     return handleRequest(request, env, ctx);
-  },
-  async queue(batch, env, ctx) {
-    for (const message of batch.messages) {
-      const refreshedAt = await env.RULE_CACHE.get(`${REFRESH_PREFIX}${message.body.kvKey}`, { type: "text", cacheTtl: 60 });
-      if (refreshedAt !== null && Number(refreshedAt) > message.body.refreshedAt) {
-        message.ack();
-        continue;
-      }
-      const request = new Request(new URL(message.body.path, "https://refresh.internal"));
-      const response = await handleRequest(request, env, ctx, true);
-      if (response.ok) message.ack();
-      else message.retry({ delaySeconds: 60 });
-    }
   }
 };

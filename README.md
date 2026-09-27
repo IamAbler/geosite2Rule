@@ -7,14 +7,23 @@ Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生�
 ```sh
 npm install
 npm run build
+npx wrangler d1 migrations apply geosite2rule-cache --local
 npm run dev       # 本地预览
 npm run deploy
 npm run preview   # 发布当前分支的 Cloudflare Preview
 ```
 
-Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果先查边缘缓存，再查共享 Workers KV；等价的分类大小写、属性顺序和 `.list`／`.txt` 地址共用缓存。默认来源的 KV 结果保留 30 天，超过 6 小时后在后续访问时返回旧值并通过 Queue 异步刷新。Queue 消费者并发设为 1。每个 Worker 实例还会在内存中短暂保留有限数量的源文件和分类索引，以减少冷缓存转换时的重复扫描。边缘缓存保留 1 小时，源文件请求缓存 1 小时。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。自定义与 V2Fly 来源只使用边缘缓存。
+Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果先查边缘缓存，再按源文件 SHA-256 与规范化路径查 D1；等价的分类大小写、属性顺序和 `.list`／`.txt` 地址共用缓存。KV 只保存 Loyalsoldier 和 V2Fly 来源的 SHA-256、校验时间及可用的 `Last-Modified` 日期，24 小时校验一次。源文件未改变时直接复用 D1 结果；D1 数据保留 30 天，单份结果上限 8 MiB，按 1 MiB 分块避开单行大小限制。边缘响应缓存 1 小时，源文件请求缓存 1 小时。每个 Worker 实例还会短暂保留有限数量的源文件和分类索引。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。
 
-KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`，Queue 为 `geosite2rule-refresh`。每份默认来源的 KV 规则结果另有一条很小的刷新时间记录，供 Queue 跳过已更新的任务；因此首次转换会产生两次 KV 写入。首次请求或 KV 未命中仍需同步转换，大型分类可能超出 Workers 免费套餐的 CPU 限额；自动刷新主要避免热门缓存过期时的并发重算。免费套餐的 KV 写入额度有限，写入失败不会影响规则接口响应。
+KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`，D1 数据库绑定为 `RULE_DB`。自定义 URL 不写入 KV 或 D1，但若文件内容与已缓存的官方来源相同，可直接命中 D1；自定义响应的边缘缓存仍为 1 小时。首次转换仍需同步执行，大型分类可能超出 Workers 免费套餐 CPU 限额；迁移主要减少重复转换和 KV 写入，不保证所有冷请求都能在免费 CPU 限额内完成。KV、D1 写入失败不会影响本次规则响应。
+
+远程 D1 数据库 `geosite2rule-cache` 已创建，真实 UUID 已写入 `wrangler.jsonc`，迁移 `0001_rule_cache.sql` 已应用。新环境需要先创建同名数据库、更新 UUID，再应用迁移；后续迁移使用：
+
+```sh
+npx wrangler d1 migrations apply geosite2rule-cache --remote
+```
+
+旧 KV 规则正文和 Queue 配置不再读取；确认新版本运行正常后，可在 Cloudflare 控制台删除旧 Queue。旧 KV 条目有过期时间，会自行清除。
 
 仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
 

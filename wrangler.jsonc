@@ -12,23 +12,13 @@
       "id": "b34b8418e9e446d7a0450d233ecf0665"
     }
   ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "RULE_REFRESH",
-        "queue": "geosite2rule-refresh"
-      }
-    ],
-    "consumers": [
-      {
-        "queue": "geosite2rule-refresh",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 3,
-        "max_concurrency": 1
-      }
-    ]
-  },
+  "d1_databases": [
+    {
+      "binding": "RULE_DB",
+      "database_name": "geosite2rule-cache",
+      "database_id": "2092cfce-4da3-4a0e-9733-6bb70b188103"
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
