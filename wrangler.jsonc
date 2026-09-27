@@ -6,6 +6,12 @@
     "directory": "./dist",
     "binding": "ASSETS"
   },
+  "kv_namespaces": [
+    {
+      "binding": "RULE_CACHE",
+      "id": "b34b8418e9e446d7a0450d233ecf0665"
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

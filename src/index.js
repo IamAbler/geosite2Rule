@@ -13,6 +13,8 @@ const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community
 const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const CACHE_SECONDS = 3600;
+const KV_CACHE_SECONDS = 6 * 3600;
+const MAX_KV_BODY_LENGTH = 8 * 1024 * 1024;
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
@@ -235,13 +237,25 @@ export default {
     if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
     if (choice.id === "custom") cacheUrl.searchParams.set("url", choice.url);
     const cacheKey = new Request(cacheUrl);
+    const kvKey = choice.id === "loyalsoldier" ? `v1:${choice.url}:${cacheUrl.pathname}${cacheUrl.search}` : null;
     if (cache) {
       const hit = await cache.match(cacheKey);
       if (hit) return forHead(request, hit);
     }
+    if (kvKey && env.RULE_CACHE && kvKey.length <= 512) {
+      try {
+        const { value, metadata } = await env.RULE_CACHE.getWithMetadata(kvKey, { type: "arrayBuffer", cacheTtl: 60 });
+        if (value && metadata?.headers) {
+          const hit = new Response(value, { headers: metadata.headers });
+          if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
+          return forHead(request, hit);
+        }
+      } catch (error) { console.warn("KV cache read unavailable", error); }
+    }
 
     try {
       let response;
+      let kvCacheable = true;
       if (isVersion) {
         response = json(await version(choice));
       } else {
@@ -256,15 +270,25 @@ export default {
           const data = readIpCategory(bytes, selected.category, format !== "mrs");
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           if (data.inverse) return json({ error: "Inverse GeoIP categories cannot be converted to a positive ruleset" }, 422);
-          response = responseForRules(renderIp(data, format), format);
+          const result = renderIp(data, format);
+          kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
+          response = responseForRules(result, format);
         } else {
           const data = readCategory(bytes, selected.category, selected.include, selected.exclude);
           if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
-          response = responseForRules(renderSite(data.domains, format), format);
+          const result = renderSite(data.domains, format);
+          kvCacheable = result.body.length <= MAX_KV_BODY_LENGTH;
+          response = responseForRules(result, format);
         }
       }
       response.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
       if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+      if (kvCacheable && kvKey && env.RULE_CACHE && kvKey.length <= 512) {
+        const headers = Object.fromEntries(response.headers);
+        ctx.waitUntil(env.RULE_CACHE.put(kvKey, response.clone().body, {
+          expirationTtl: KV_CACHE_SECONDS, metadata: { headers }
+        }).catch(error => console.warn("KV cache write unavailable", error)));
+      }
       return forHead(request, response);
     } catch (error) {
       console.error(error);

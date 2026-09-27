@@ -12,7 +12,9 @@ npm run deploy
 npm run preview   # 发布当前分支的 Cloudflare Preview
 ```
 
-Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。无需 KV、R2 或数据库。
+Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果先查边缘缓存，再查共享的 Workers KV；边缘缓存保留 1 小时，默认来源的 KV 结果保留 6 小时，源文件请求缓存 1 小时。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。自定义与 V2Fly 来源只使用边缘缓存。
+
+KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`。首次请求或 KV 未命中仍需实时转换，大型分类可能超出 Workers 免费套餐的 CPU 限额；KV 不会消除冷请求的转换成本。免费套餐的 KV 写入额度也有限，写入失败不会影响规则接口响应。
 
 仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
 
