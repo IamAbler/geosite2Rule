@@ -23,7 +23,7 @@ KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`，D1 数据库绑定�
 npx wrangler d1 migrations apply geosite2rule-cache --remote
 ```
 
-旧 KV 规则正文和 Queue 配置不再读取；确认新版本运行正常后，可在 Cloudflare 控制台删除旧 Queue。旧 KV 条目有过期时间，会自行清除。
+旧 KV 规则正文不再读取，旧 Queue 消费者与 Queue 已删除。旧 KV 条目有过期时间，会自行清除。
 
 仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
 
