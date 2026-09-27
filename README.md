@@ -6,6 +6,7 @@ Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生�
 
 ```sh
 npm install
+npm test
 npm run build
 npx wrangler d1 migrations apply geosite2rule-cache --local
 npm run dev       # 本地预览
@@ -23,7 +24,9 @@ KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`，D1 数据库绑定�
 npx wrangler d1 migrations apply geosite2rule-cache --remote
 ```
 
-旧 KV 规则正文不再读取，旧 Queue 消费者与 Queue 已删除。旧 KV 条目有过期时间，会自行清除。
+旧版 KV 规则正文键已定向删除，旧 Queue 消费者与 Queue 已删除。来源元数据与规则缓存按版本隔离，转换逻辑更新后不会复用旧结果。
+
+自定义源必须使用公开主机名的 HTTPS 默认端口；下载重定向逐跳校验，最多跟随 5 次。请求分类、属性及输出格式在下载前校验；不存在的属性、空源文件和无可转换规则返回错误，不写入缓存。单个源文件仍限制为 32 MiB。
 
 仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
 

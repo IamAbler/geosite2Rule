@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { checkedUrl } from "../src/validation.js";
 
 const sourceType = ref("geosite");
 const provider = ref("loyalsoldier");
@@ -181,12 +182,7 @@ function applyCustom() {
     const value = customDraft.value[type].trim();
     if (!value) { applied[type] = ""; continue; }
     try {
-      const url = new URL(value);
-      if (url.protocol !== "https:" || url.username || url.password || url.hash || url.href.length > 2048 ||
-        url.hostname === "localhost" || url.hostname.endsWith(".localhost") ||
-        url.hostname.endsWith(".local") || /^\d+(?:\.\d+){3}$/.test(url.hostname) || url.hostname.startsWith("[")) {
-        throw new Error();
-      }
+      const url = checkedUrl(value, location.hostname);
       applied[type] = url.href;
     } catch {
       customError.value = (type === "geosite" ? "Geosite" : "GeoIP") + " 地址需要是公开的 HTTPS URL";

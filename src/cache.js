@@ -3,7 +3,7 @@ const SOURCE_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 const RESULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_RESULT_BYTES = 8 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
-const CACHE_VERSION = "v2";
+export const CACHE_VERSION = "v3";
 
 export async function sha256(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);

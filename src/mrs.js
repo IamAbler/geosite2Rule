@@ -113,7 +113,8 @@ export function domainMrs(domains) {
   let count = 0;
   for (const { type, value } of domains) {
     const name = value.toLowerCase();
-    if ((type !== 2 && type !== 3) || !/^[a-z0-9_.!*-]+$/.test(name) || name.includes("..")) {
+    if ((type !== 2 && type !== 3) || !/^[a-z0-9_.!*-]+$/.test(name) ||
+      name.startsWith(".") || name.endsWith(".") || name.includes("..") || !/[a-z0-9]/.test(name)) {
       skipped++;
       continue;
     }

@@ -1,7 +1,8 @@
 import { indexSiteCategories, listCategories, listAttributes, readCategory } from "./geosite.js";
 import { indexIpCategories, listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
-import { getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
+import { CACHE_VERSION, getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
+import { checkedUrl, validAttributeName, validCategoryName } from "./validation.js";
 
 const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
 const DEFAULT_IP = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat";
@@ -13,7 +14,9 @@ const V2FLY_IP = "https://github.com/v2fly/geoip/releases/latest/download/geoip.
 const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community/releases/latest";
 const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+const MAX_SOURCE_REDIRECTS = 5;
 const CACHE_SECONDS = 3600;
+const DOMAIN_VALUE = /^[\p{L}\p{N}_](?:[\p{L}\p{N}_-]{0,61}[\p{L}\p{N}_])?(?:\.[\p{L}\p{N}_](?:[\p{L}\p{N}_-]{0,61}[\p{L}\p{N}_])?)*$/u;
 const MAX_SOURCE_CACHE_BYTES = 48 * 1024 * 1024;
 const MAX_SOURCE_CACHE_ENTRIES = 2;
 const sourceCache = new Map();
@@ -21,33 +24,39 @@ const pendingSources = new Map();
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
-    "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*"
+    "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*",
+    "x-content-type-options": "nosniff", "cache-control": "no-store"
   } });
 }
 
 function selection(raw, type) {
   const parts = raw.toLowerCase().split("@");
-  if (!/^[a-z0-9_!.-]{1,100}$/.test(parts[0]) || parts.length > (type === "geoip" ? 1 : 9)) return null;
+  if (!validCategoryName(parts[0]) || parts.length > (type === "geoip" ? 1 : 9)) return null;
   const include = [];
   const exclude = [];
   for (const part of parts.slice(1)) {
-    if (!/^-?[a-z0-9_!.-]{1,50}$/.test(part)) return null;
-    if (part.startsWith("-")) exclude.push(part.slice(1));
-    else include.push(part);
+    const name = part.startsWith("-") ? part.slice(1) : part;
+    if (!validAttributeName(name)) return null;
+    if (part.startsWith("-")) exclude.push(name);
+    else include.push(name);
   }
   if (include.some(name => exclude.includes(name))) return null;
   return { category: parts[0], include: [...new Set(include)].sort(), exclude: [...new Set(exclude)].sort() };
 }
 
-function checkedUrl(value) {
-  if (typeof value !== "string" || value.length > 2048) throw new Error("Invalid source URL");
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username || url.password || url.hash ||
-    url.hostname === "localhost" || url.hostname.endsWith(".localhost") ||
-    url.hostname.endsWith(".local") || /^\d+(?:\.\d+){3}$/.test(url.hostname) || url.hostname.startsWith("[")) {
-    throw new Error("Source URL must use a public HTTPS hostname without credentials or fragments");
+async function fetchPublic(value, { method = "GET", headers, blockedHostname } = {}) {
+  let url = checkedUrl(value, blockedHostname);
+  for (let hop = 0; hop <= MAX_SOURCE_REDIRECTS; hop++) {
+    const response = await fetch(url, { method, headers, redirect: "manual",
+      cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location || /[\x00-\x1f\x7f\\]/.test(location) || hop === MAX_SOURCE_REDIRECTS) {
+      throw new Error("Source redirected too many times or without a valid location");
+    }
+    url = checkedUrl(new URL(location, url).href, blockedHostname);
   }
-  return url;
 }
 
 function sourceChoice(type, env, params, origin) {
@@ -66,16 +75,19 @@ function sourceChoice(type, env, params, origin) {
   if (id === "custom") {
     const value = params.get("url");
     if (!value) throw new Error("Custom source URL is required");
-    const parsed = checkedUrl(value);
-    if (parsed.hostname === new URL(origin).hostname) throw new Error("Custom source cannot point to this Worker");
-    return { id, url: parsed.href, releaseApi: null, asset: parsed.pathname.split("/").pop() || "custom.dat" };
+    const blockedHostname = new URL(origin).hostname;
+    const parsed = checkedUrl(value, blockedHostname);
+    return { id, url: parsed.href, blockedHostname, releaseApi: null, asset: parsed.pathname.split("/").pop() || "custom.dat" };
   }
   throw new Error("Unknown source");
 }
 
-async function fetchSourceBytes(value) {
-  const response = await fetch(checkedUrl(value), { cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
-  if (!response.ok) throw new Error(`Source returned HTTP ${response.status}`);
+async function fetchSourceBytes(value, blockedHostname) {
+  const response = await fetchPublic(value, { blockedHostname });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Source returned HTTP ${response.status}`);
+  }
   const length = Number(response.headers.get("content-length"));
   if (length > MAX_SOURCE_BYTES) {
     await response.body?.cancel();
@@ -112,11 +124,11 @@ async function fetchSourceBytes(value) {
 
 async function sourceBytes(choice) {
   try {
-    return await fetchSourceBytes(choice.url);
+    return await fetchSourceBytes(choice.url, choice.blockedHostname);
   } catch (error) {
     if (!choice.fallbackUrl || error.message === "Source exceeds 32 MiB limit") throw error;
     console.warn("Primary source unavailable; using GitHub fallback", error);
-    return fetchSourceBytes(choice.fallbackUrl);
+    return fetchSourceBytes(choice.fallbackUrl, choice.blockedHostname);
   }
 }
 
@@ -156,6 +168,12 @@ function yaml(rules) {
   return rules.length ? `payload:\n${rules.map(rule => `  - ${JSON.stringify(rule)}`).join("\n")}\n` : "payload: []\n";
 }
 
+function invalidRuleValue(value, type, allowRegexComma = false) {
+  return !value || /[\x00-\x1f\x7f\u2028\u2029]/.test(value) ||
+    ((type === 2 || type === 3) && (value.length > 253 || !DOMAIN_VALUE.test(value))) ||
+    ((!allowRegexComma || type !== 1) && value.includes(","));
+}
+
 function singBox(fields) {
   const rule = Object.fromEntries(Object.entries(fields).filter(([, values]) => values.length));
   const count = Object.values(rule).reduce((total, values) => total + values.length, 0);
@@ -169,7 +187,7 @@ function renderSite(domains, format) {
     let skipped = 0;
     const keys = ["domain_keyword", "domain_regex", "domain_suffix", "domain"];
     for (const { type, value } of domains) {
-      if (!value || /[\r\n]/.test(value) || !keys[type]) { skipped++; continue; }
+      if (invalidRuleValue(value, type, true) || !keys[type]) { skipped++; continue; }
       fields[keys[type]].add(value);
     }
     const result = singBox(Object.fromEntries(Object.entries(fields).map(([key, values]) => [key, [...values].sort()])));
@@ -178,7 +196,7 @@ function renderSite(domains, format) {
   const lines = new Set();
   let skipped = 0;
   for (const { type, value } of domains) {
-    if (!value || /[\r\n,]/.test(value)) { skipped++; continue; }
+    if (invalidRuleValue(value, type)) { skipped++; continue; }
     if (format === "quantumult-x") {
       const kind = ["host-keyword", null, "host-suffix", "host"][type];
       if (!kind) { skipped++; continue; }
@@ -208,9 +226,8 @@ function renderIp(data, format) {
 async function version(choice) {
   if (choice.releaseApi) {
     try {
-      const response = await fetch(choice.releaseApi, {
-        headers: { "accept": "application/vnd.github+json", "user-agent": "geosite2rule-worker" },
-        cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS }
+      const response = await fetchPublic(choice.releaseApi, {
+        headers: { "accept": "application/vnd.github+json", "user-agent": "geosite2rule-worker" }
       });
       if (response.ok) {
         const release = await response.json();
@@ -218,10 +235,14 @@ async function version(choice) {
         const date = asset?.updated_at || release.published_at;
         if (date && !Number.isNaN(Date.parse(date))) return { date, source: "release", version: release.tag_name || null };
       }
+      await response.body?.cancel();
     } catch (error) { console.warn("Release date unavailable", error); }
   }
-  const response = await fetch(checkedUrl(choice.url), { method: "HEAD", cf: { cacheEverything: true, cacheTtl: CACHE_SECONDS } });
-  if (!response.ok) throw new Error(`Source metadata returned HTTP ${response.status}`);
+  const response = await fetchPublic(choice.url, { method: "HEAD", blockedHostname: choice.blockedHostname });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Source metadata returned HTTP ${response.status}`);
+  }
   const header = response.headers.get("last-modified");
   await response.body?.cancel();
   return { date: header && !Number.isNaN(Date.parse(header)) ? new Date(header).toISOString() : null, source: "last-modified", version: null };
@@ -233,7 +254,8 @@ function responseForRules(result, format) {
     "content-type": binary ? "application/octet-stream" : format === "clash" ? "application/yaml; charset=utf-8" : format === "sing-box" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
     "x-rule-count": String(result.count),
     "x-skipped-rules": String(result.skipped),
-    "access-control-allow-origin": "*"
+    "access-control-allow-origin": "*",
+    "x-content-type-options": "nosniff"
   } });
 }
 
@@ -243,6 +265,7 @@ function forHead(request, response) {
 
 async function handleRequest(request, env, ctx) {
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
+    if (request.url.length > 4096) return json({ error: "Request URL is too long" }, 414);
     const url = new URL(request.url);
     if (url.pathname === "/") return env.ASSETS.fetch(request);
 
@@ -282,6 +305,7 @@ async function handleRequest(request, env, ctx) {
     if (isCategories || isVersion) cacheUrl.searchParams.set("type", type);
     if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
     cacheUrl.searchParams.set("source_url", choice.url);
+    cacheUrl.searchParams.set("cache_version", CACHE_VERSION);
     const cacheKey = new Request(cacheUrl);
     if (cache) {
       const hit = await cache.match(cacheKey);
@@ -321,6 +345,7 @@ async function handleRequest(request, env, ctx) {
       } else {
         if (persistent && !fetched) fetched = await sourceBytes(choice);
         const { bytes, index } = await sourceData(choice, type, fetched);
+        if (!index.size) return json({ error: "Source contains no categories" }, 422);
         if (persistent) {
           const actualSha = fetchedSha || await sha256(bytes);
           if (actualSha !== sha) {
@@ -336,19 +361,27 @@ async function handleRequest(request, env, ctx) {
         if (isCategories) {
           response = json({ categories: type === "geoip" ? listIpCategories(bytes, index) : listCategories(bytes, index) });
         } else if (attributeMatch) {
+          if (!index.has(selected.category)) return json({ error: `Category ${selected.category} not found` }, 404);
           const data = listAttributes(bytes, selected.category, index);
-          if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           response = json(data);
         } else if (type === "geoip") {
+          if (!index.has(selected.category)) return json({ error: `Category ${selected.category} not found` }, 404);
           const data = readIpCategory(bytes, selected.category, format !== "mrs", index);
-          if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           if (data.inverse) return json({ error: "Inverse GeoIP categories cannot be converted to a positive ruleset" }, 422);
           const result = renderIp(data, format);
+          if (!result.count) return json({ error: "No rules can be converted for this category" }, 422);
           response = responseForRules(result, format);
         } else {
+          if (!index.has(selected.category)) return json({ error: `Category ${selected.category} not found` }, 404);
+          if (selected.include.length || selected.exclude.length) {
+            const attributes = new Set(listAttributes(bytes, selected.category, index).attributes);
+            if ([...selected.include, ...selected.exclude].some(name => !attributes.has(name))) {
+              return json({ error: "Unknown category attribute" }, 422);
+            }
+          }
           const data = readCategory(bytes, selected.category, selected.include, selected.exclude, index);
-          if (!data.found) return json({ error: `Category ${selected.category} not found` }, 404);
           const result = renderSite(data.domains, format);
+          if (!result.count) return json({ error: "No rules can be converted for this category" }, 422);
           response = responseForRules(result, format);
         }
       }
@@ -361,6 +394,10 @@ async function handleRequest(request, env, ctx) {
     } catch (error) {
       console.error(error);
       if (error.message?.startsWith("MRS requires")) return json({ error: error.message }, 422);
+      if (error.message === "Invalid geo data protobuf" || error.message === "Invalid GeoIP CIDR entry") {
+        return json({ error: "Invalid geo data file" }, 422);
+      }
+      if (error.message === "Source exceeds 32 MiB limit") return json({ error: error.message }, 413);
       return json({ error: "Could not load or convert geo data" }, 502);
     }
 }

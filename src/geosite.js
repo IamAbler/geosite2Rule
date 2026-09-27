@@ -1,5 +1,6 @@
 // Wire format: https://github.com/v2fly/v2ray-core/blob/master/app/router/routercommon/common.proto
 import { firstString, string, varint, visit } from "./protobuf.js";
+import { validAttributeName, validCategoryName } from "./validation.js";
 
 function siteCode(bytes, start, end) {
   return firstString(bytes, start, end, 1).toLowerCase();
@@ -10,7 +11,7 @@ export function indexSiteCategories(bytes) {
   visit(bytes, 0, bytes.length, item => {
     if (item.number === 1 && item.wire === 2) {
       const code = siteCode(bytes, item.start, item.end);
-      if (code) {
+      if (validCategoryName(code)) {
         if (!index.has(code)) index.set(code, []);
         index.get(code).push([item.start, item.end]);
       }
@@ -34,7 +35,7 @@ function attributes(bytes, start, end) {
       enabled = value !== 0;
     }
   });
-  if (key && enabled) result.add(key);
+  if (validAttributeName(key) && enabled) result.add(key);
   return result;
 }
 
