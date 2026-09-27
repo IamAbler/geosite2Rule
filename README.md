@@ -1,6 +1,6 @@
 # geosite2Rule Worker
 
-Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生成 Clash/Mihomo、Surge 与 Mihomo MRS 规则集。首页使用 Vue 3 和微软 [Fluent UI Web Components](https://github.com/microsoft/fluentui/tree/master/packages/web-components)，提供数据来源、分类、属性与格式选择，以及订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
+Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生成 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket 和 sing-box 规则集。首页使用 Vue 3 和微软 [Fluent UI Web Components](https://github.com/microsoft/fluentui/tree/master/packages/web-components)，提供数据来源、分类、属性与格式选择，以及订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
 
 ## 本地运行与手动部署
 
@@ -50,10 +50,18 @@ Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供�
 | `/rules/clash-text/google.list` | 文本 | Mihomo `classical`、`format: text` provider |
 | `/rules/surge/google.list` | 文本 | Surge `RULE-SET` |
 | `/rules/mrs/google.mrs` | MRS | Mihomo `domain`、`format: mrs` provider |
+| `/rules/quantumult-x/google.list` | 文本 | Quantumult X `[filter_remote]` |
+| `/rules/loon/google.list` | 文本 | Loon `[Remote Rule]` |
+| `/rules/shadowrocket/google.list` | 文本 | Shadowrocket `RULE-SET` |
+| `/rules/sing-box/google.json` | JSON | sing-box `source` 规则集 |
 | `/rules/geoip/clash/cn.yaml` | YAML | Mihomo `ipcidr` provider |
 | `/rules/geoip/clash-text/cn.list` | 文本 | Mihomo `ipcidr`、`format: text` provider |
 | `/rules/geoip/surge/cn.list` | 文本 | Surge IP `RULE-SET` |
 | `/rules/geoip/mrs/cn.mrs` | MRS | Mihomo `ipcidr`、`format: mrs` provider |
+| `/rules/geoip/quantumult-x/cn.list` | 文本 | Quantumult X IPv4/IPv6 CIDR |
+| `/rules/geoip/loon/cn.list` | 文本 | Loon IPv4/IPv6 CIDR |
+| `/rules/geoip/shadowrocket/cn.list` | 文本 | Shadowrocket IPv4/IPv6 CIDR |
+| `/rules/geoip/sing-box/cn.json` | JSON | sing-box `ip_cidr` 规则集 |
 
 例如 `/categories?type=geosite&source=v2fly`、`/rules/mrs/google.mrs?source=v2fly` 和 `/rules/clash/google.yaml?source=custom&url=https%3A%2F%2Fexample.com%2Fgeosite.dat`。
 
@@ -79,6 +87,35 @@ Surge `[Rule]` 示例：
 RULE-SET,https://YOUR-WORKER.example/rules/surge/google.list,PROXY
 ```
 
+Quantumult X `[filter_remote]` 示例：
+
+```ini
+https://YOUR-WORKER.example/rules/quantumult-x/google.list, tag=google, force-policy=proxy, enabled=true
+```
+
+Loon `[Remote Rule]` 示例：
+
+```ini
+https://YOUR-WORKER.example/rules/loon/google.list,policy=PROXY,enabled=true
+```
+
+Shadowrocket `[Rule]` 示例：
+
+```ini
+RULE-SET,https://YOUR-WORKER.example/rules/shadowrocket/google.list,PROXY
+```
+
+sing-box 的 `route` 配置片段：
+
+```json
+{
+  "rule_set": [{ "type": "remote", "tag": "google", "format": "source", "url": "https://YOUR-WORKER.example/rules/sing-box/google.json" }],
+  "rules": [{ "rule_set": "google", "action": "route", "outbound": "proxy" }]
+}
+```
+
+将示例中的 `PROXY`、`proxy` 或 `outbound` 换成自己的策略或出站标签。Quantumult X 列表按其规则格式携带默认 `proxy` 策略，`force-policy` 可覆盖它；GeoIP 的 IPv6 规则使用 `ip6-cidr`。Loon 与 Shadowrocket 使用独立的订阅地址及各自的配置示例，其列表内容与 Surge 的普通规则格式相同。sing-box 输出 `version: 1` 的 source JSON，可作为远程规则集直接引用；域名正则会写入 `domain_regex`，实际能否匹配取决于 sing-box 的正则语法。
+
 Mihomo MRS 配置示例：
 
 ```yaml
@@ -97,6 +134,6 @@ rule-providers:
     interval: 3600
 ```
 
-`domain`、`full`、`keyword` 分别转换为 `DOMAIN-SUFFIX`、`DOMAIN`、`DOMAIN-KEYWORD`。Clash/Mihomo classical 中的 `regexp` 转为 `DOMAIN-REGEX`；Surge 无等价的域名正则规则，因此会跳过。MRS 只支持 `domain` 与 `ipcidr` 行为：Geosite MRS 可保留完整域名和域名后缀，`keyword`、`regexp` 及无法编码为 ASCII 域名的值会跳过。MRS 使用有效的 Zstandard 原始块封装，文件通常比 Mihomo 自带转换器生成的压缩 MRS 大。规则值含逗号或换行时，文本格式也会跳过，以避免输出无效规则。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 显示结果数量。单个源文件上限为 32 MiB。
+`domain`、`full`、`keyword` 分别转换为 `DOMAIN-SUFFIX`、`DOMAIN`、`DOMAIN-KEYWORD`。Clash/Mihomo classical 中的 `regexp` 转为 `DOMAIN-REGEX`；Surge、Quantumult X、Loon 与 Shadowrocket 输出会跳过域名正则。MRS 只支持 `domain` 与 `ipcidr` 行为：Geosite MRS 可保留完整域名和域名后缀，`keyword`、`regexp` 及无法编码为 ASCII 域名的值会跳过。MRS 使用有效的 Zstandard 原始块封装，文件通常比 Mihomo 自带转换器生成的压缩 MRS 大。规则值含逗号或换行时，文本格式也会跳过，以避免输出无效规则。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 显示结果数量。单个源文件上限为 32 MiB。
 
 Loyalsoldier 与 V2Fly 的版本日期取自各自 GitHub Release 对应文件的更新时间；自定义源尝试读取 `Last-Modified` 响应头。数据源没有可靠日期时，首页会显示“暂无日期”。

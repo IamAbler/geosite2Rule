@@ -101,15 +101,38 @@ function yaml(rules) {
   return rules.length ? `payload:\n${rules.map(rule => `  - ${JSON.stringify(rule)}`).join("\n")}\n` : "payload: []\n";
 }
 
+function singBox(fields) {
+  const rule = Object.fromEntries(Object.entries(fields).filter(([, values]) => values.length));
+  const count = Object.values(rule).reduce((total, values) => total + values.length, 0);
+  return { body: JSON.stringify({ version: 1, rules: count ? [rule] : [] }, null, 2) + "\n", count, skipped: 0 };
+}
+
 function renderSite(domains, format) {
   if (format === "mrs") return domainMrs(domains);
+  if (format === "sing-box") {
+    const fields = { domain: new Set(), domain_suffix: new Set(), domain_keyword: new Set(), domain_regex: new Set() };
+    let skipped = 0;
+    const keys = ["domain_keyword", "domain_regex", "domain_suffix", "domain"];
+    for (const { type, value } of domains) {
+      if (!value || /[\r\n]/.test(value) || !keys[type]) { skipped++; continue; }
+      fields[keys[type]].add(value);
+    }
+    const result = singBox(Object.fromEntries(Object.entries(fields).map(([key, values]) => [key, [...values].sort()])));
+    return { ...result, skipped };
+  }
   const lines = new Set();
   let skipped = 0;
   for (const { type, value } of domains) {
     if (!value || /[\r\n,]/.test(value)) { skipped++; continue; }
-    const kind = ["DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-SUFFIX", "DOMAIN"][type];
-    if (!kind || (format === "surge" && type === 1)) { skipped++; continue; }
-    lines.add(`${kind},${value}`);
+    if (format === "quantumult-x") {
+      const kind = ["host-keyword", null, "host-suffix", "host"][type];
+      if (!kind) { skipped++; continue; }
+      lines.add(`${kind},${value},proxy`);
+    } else {
+      const kind = ["DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-SUFFIX", "DOMAIN"][type];
+      if (!kind || (["surge", "loon", "shadowrocket"].includes(format) && type === 1)) { skipped++; continue; }
+      lines.add(`${kind},${value}`);
+    }
   }
   const rules = [...lines].sort();
   return { body: format === "clash" ? yaml(rules) : `${rules.join("\n")}${rules.length ? "\n" : ""}`, count: rules.length, skipped };
@@ -118,7 +141,10 @@ function renderSite(domains, format) {
 function renderIp(data, format) {
   if (format === "mrs") return ipMrs(data.networks);
   const unique = [...new Set(data.cidrs)].sort();
-  const rules = format === "surge"
+  if (format === "sing-box") return singBox({ ip_cidr: unique });
+  const rules = format === "quantumult-x"
+    ? unique.map(cidr => `${cidr.includes(":") ? "ip6-cidr" : "ip-cidr"},${cidr},proxy`)
+    : ["surge", "loon", "shadowrocket"].includes(format)
     ? unique.map(cidr => `${cidr.includes(":") ? "IP-CIDR6" : "IP-CIDR"},${cidr}`)
     : unique;
   return { body: format === "clash" ? yaml(rules) : `${rules.join("\n")}${rules.length ? "\n" : ""}`, count: rules.length, skipped: 0 };
@@ -149,7 +175,7 @@ async function version(choice) {
 function responseForRules(result, format) {
   const binary = format === "mrs";
   return new Response(result.body, { headers: {
-    "content-type": binary ? "application/octet-stream" : format === "clash" ? "application/yaml; charset=utf-8" : "text/plain; charset=utf-8",
+    "content-type": binary ? "application/octet-stream" : format === "clash" ? "application/yaml; charset=utf-8" : format === "sing-box" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
     "x-rule-count": String(result.count),
     "x-skipped-rules": String(result.skipped),
     "access-control-allow-origin": "*"
@@ -169,7 +195,7 @@ export default {
     const isCategories = url.pathname === "/categories";
     const isVersion = url.pathname === "/version";
     const attributeMatch = /^\/attributes\/([^/]+)$/.exec(url.pathname);
-    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs)\/([^/]+)\.(yaml|list|txt|mrs)$/.exec(url.pathname);
+    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs|quantumult-x|loon|shadowrocket|sing-box)\/([^/]+)\.(yaml|list|txt|mrs|json)$/.exec(url.pathname);
     if (!isCategories && !isVersion && !attributeMatch && !ruleMatch) return json({ error: "Not found" }, 404);
 
     const type = ruleMatch ? (ruleMatch[1] ? "geoip" : "geosite") : attributeMatch ? "geosite" : url.searchParams.get("type") || "geosite";
@@ -179,7 +205,7 @@ export default {
     catch (error) { return json({ error: error.message }, 400); }
     const format = ruleMatch?.[2];
     const extension = ruleMatch?.[4];
-    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : extension !== "list" && extension !== "txt")) {
+    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : format === "sing-box" ? extension !== "json" : extension !== "list" && extension !== "txt")) {
       return json({ error: "Invalid extension for format" }, 400);
     }
 

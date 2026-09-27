@@ -32,7 +32,11 @@ const formats = [
   { id: "clash", title: "Clash YAML" },
   { id: "clash-text", title: "Clash 文本" },
   { id: "surge", title: "Surge" },
-  { id: "mrs", title: "MRS" }
+  { id: "mrs", title: "MRS" },
+  { id: "quantumult-x", title: "Quantumult X" },
+  { id: "loon", title: "Loon" },
+  { id: "shadowrocket", title: "Shadowrocket" },
+  { id: "sing-box", title: "sing-box" }
 ];
 
 const matches = computed(() => {
@@ -70,13 +74,24 @@ const ruleUrl = computed(() => {
     }
   }
   const path = sourceType.value === "geoip" ? "/rules/geoip/" : "/rules/";
-  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : ".list";
+  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : ".list";
   return location.origin + endpoint(path + format.value + "/" + encodeURIComponent(name) + extension);
 });
 const behavior = computed(() => sourceType.value === "geoip" ? "ipcidr" : format.value === "mrs" ? "domain" : "classical");
+const formatNotice = computed(() => {
+  if (sourceType.value !== "geosite") return "";
+  if (format.value === "mrs") return "跳过 keyword / regexp";
+  return ["surge", "quantumult-x", "loon", "shadowrocket"].includes(format.value) ? "跳过 regexp" : "";
+});
 const snippet = computed(() => {
   if (!ruleUrl.value) return "选择分类";
-  if (format.value === "surge") return "RULE-SET," + ruleUrl.value + ",PROXY";
+  if (format.value === "surge" || format.value === "shadowrocket") return "RULE-SET," + ruleUrl.value + ",PROXY";
+  if (format.value === "loon") return "[Remote Rule]\n" + ruleUrl.value + ",policy=PROXY,enabled=true";
+  if (format.value === "quantumult-x") return "[filter_remote]\n" + ruleUrl.value + ", tag=selected, force-policy=proxy, enabled=true";
+  if (format.value === "sing-box") return JSON.stringify({ route: {
+    rule_set: [{ type: "remote", tag: "selected", format: "source", url: ruleUrl.value }],
+    rules: [{ rule_set: "selected", action: "route", outbound: "proxy" }]
+  } }, null, 2);
   const ruleFormat = format.value === "mrs" ? "mrs" : format.value === "clash-text" ? "text" : "yaml";
   return [
     "rule-providers:", "  selected:", "    type: http",
@@ -373,7 +388,7 @@ onBeforeUnmount(() => {
               <div class="actions"><fluent-button appearance="primary" :disabled="!ruleUrl" @click="copyUrl">复制地址</fluent-button>
                 <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : '预览规则' }} <span aria-hidden="true">↗</span></a></div>
             </div>
-            <p v-if="message || (sourceType === 'geosite' && format === 'mrs')" class="status" role="status">{{ message || 'MRS 跳过 keyword / regexp' }}</p>
+            <p v-if="message || formatNotice" class="status" role="status">{{ message || formatNotice }}</p>
           </section>
           <section class="panel source-panel"><div class="section-head compact"><h2>数据源</h2></div><div class="meta-list">
             <div class="meta-item"><span class="meta-label">来源</span><strong class="meta-value">{{ providerName }}</strong></div>
