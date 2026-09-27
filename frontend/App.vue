@@ -289,12 +289,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-frame">
-    <nav class="topbar">
-      <div class="shell topbar-inner">
-        <a class="brand" href="/" aria-label="geosite2rule 首页"><span class="brand-mark" aria-hidden="true">g<span>2</span></span><span>geosite2rule</span></a>
-        <a class="top-link" href="https://github.com/IamAbler/geosite2Rule" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
-      </div>
-    </nav>
     <main class="shell">
       <header class="intro">
         <h1>规则集转换</h1>
