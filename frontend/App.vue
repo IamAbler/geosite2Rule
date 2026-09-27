@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
             <button id="category-trigger" ref="pickerTrigger" class="picker-trigger" type="button"
               :aria-expanded="categoryOpen" aria-controls="category-options" aria-haspopup="listbox" @click="togglePicker">
               <span :class="{ placeholder: !category }">{{ category || (categoriesLoading ? '正在读取分类…' : '请选择分类') }}</span>
-              <span class="picker-chevron" aria-hidden="true">⌄</span>
+              <svg class="picker-chevron" aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="m4 7 6 6 6-6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <Transition name="picker-pop"><div v-if="categoryOpen" id="category-options" class="picker-menu">
               <div class="picker-search-wrap">
