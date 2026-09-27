@@ -1,89 +1,38 @@
-# geosite2Rule Worker
+# geosite2Rule
 
-Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生成 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket 和 sing-box 规则集。首页使用 Vue 3 和微软 [Fluent UI Web Components](https://github.com/microsoft/fluentui/tree/master/packages/web-components)，提供数据来源、分类、属性与格式选择，以及订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
+将 Geosite 和 GeoIP `.dat` 数据转换为 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket 和 sing-box 可订阅的规则集。打开网页选好数据来源、分类与格式，即可复制订阅地址。
 
-## 本地运行与手动部署
+**Demo：[geo2rule.ameu.net](https://geo2rule.ameu.net/)**
 
-```sh
-npm install
-npm test
-npm run build
-npx wrangler d1 migrations apply geosite2rule-cache --local
-npm run dev       # 本地预览
-npm run deploy
-npm run preview   # 发布当前分支的 Cloudflare Preview
-```
+Demo 适合体验和检查输出。公共站点的访问额度由所有用户共享；如果要长期订阅或供多人使用，**推荐先 [Fork 本仓库](https://github.com/IamAbler/geosite2Rule/fork)，再部署到自己的 Cloudflare 账号**，避免占用 Demo 的共享额度。
 
-Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。默认 Loyalsoldier 文件从 jsDelivr 获取，CDN 失败时回退到 GitHub Release；可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，自定义地址不会自动回退。转换结果先查边缘缓存，再按源文件 SHA-256 与规范化路径查 D1；等价的分类大小写、属性顺序和 `.list`／`.txt` 地址共用缓存。KV 只保存 Loyalsoldier 和 V2Fly 来源的 SHA-256、校验时间及可用的 `Last-Modified` 日期，24 小时校验一次。源文件未改变时直接复用 D1 结果；D1 数据保留 30 天，单份结果上限 8 MiB，按 1 MiB 分块避开单行大小限制。边缘响应缓存 1 小时，源文件请求缓存 1 小时。每个 Worker 实例还会短暂保留有限数量的源文件和分类索引。jsDelivr 的分支文件可能比上游版本晚约 12 小时，页面上的版本日期取自上游 Release。
+## 适合什么场景
 
-KV 命名空间在 `wrangler.jsonc` 绑定为 `RULE_CACHE`，D1 数据库绑定为 `RULE_DB`。自定义 URL 不写入 KV 或 D1，但若文件内容与已缓存的官方来源相同，可直接命中 D1；自定义响应的边缘缓存仍为 1 小时。首次转换仍需同步执行，大型分类可能超出 Workers 免费套餐 CPU 限额；迁移主要减少重复转换和 KV 写入，不保证所有冷请求都能在免费 CPU 限额内完成。KV、D1 写入失败不会影响本次规则响应。
-
-远程 D1 数据库 `geosite2rule-cache` 已创建，真实 UUID 已写入 `wrangler.jsonc`，迁移 `0001_rule_cache.sql` 已应用。新环境需要先创建同名数据库、更新 UUID，再应用迁移；后续迁移使用：
-
-```sh
-npx wrangler d1 migrations apply geosite2rule-cache --remote
-```
-
-旧版 KV 规则正文键已定向删除，旧 Queue 消费者与 Queue 已删除。来源元数据与规则缓存按版本隔离，转换逻辑更新后不会复用旧结果。
-
-自定义源必须使用公开主机名的 HTTPS 默认端口；下载重定向逐跳校验，最多跟随 5 次。请求分类、属性及输出格式在下载前校验；不存在的属性、空源文件和无可转换规则返回错误，不写入缓存。单个源文件仍限制为 32 MiB。
-
-仓库包含已构建的 `dist/`，以兼容此前未填写构建命令的 Cloudflare Git 部署；更新前端源码后仍应运行 `npm run build` 并提交新的构建产物。推荐将 Cloudflare 构建命令设为 `npm run build`，由平台在每次部署时生成最新文件。
-
-## 数据来源
-
-| 选择 | Geosite | GeoIP |
-| --- | --- | --- |
-| Loyalsoldier（默认） | `geosite.dat` | `geoip.dat` |
-| V2Fly | [domain-list-community 的 `dlc.dat`](https://github.com/v2fly/domain-list-community) | [v2fly/geoip 的 `geoip.dat`](https://github.com/v2fly/geoip) |
-| 自定义 | 用户提供的公开 HTTPS `.dat` 地址 | 用户提供的公开 HTTPS `.dat` 地址 |
-
-自定义来源可分别填写 Geosite、GeoIP 地址，只填当前需要的一种即可。选择 V2Fly 或自定义来源后，分类接口、属性接口、版本日期和规则集订阅地址都会使用同一来源。规则地址通过 `source=v2fly` 或 `source=custom&url=...` 保存来源；自定义 URL 会出现在订阅地址中。
-
-## Cloudflare Workers Git 部署配置
-
-在 Cloudflare 控制台选择 **Workers & Pages → Create application → Import a repository**，连接 `IamAbler/geosite2Rule`。生产分支选择 `main`，根目录保持仓库根目录。Worker 名称使用 `geosite2rule`，与 `wrangler.jsonc` 中的 `name` 一致。
-
-| 配置项 | 填写内容 |
+| 需求 | 用法 |
 | --- | --- |
-| 构建命令（Build command） | `npm run build` |
-| 部署命令（Deploy command） | `npx wrangler deploy` |
-| 预览命令（Preview command） | `npx wrangler preview` |
+| 按域名分类分流 | 选择 Geosite 分类，例如 `google`，生成域名规则集 |
+| 按国家或地区 IP 分流 | 切换到 GeoIP，选择 `cn` 等分类 |
+| 只保留或排除某类域名 | 为 Geosite 分类选择属性，例如包含 `@ads` 或排除 `@-ads` |
+| 给不同客户端提供规则 | 为同一分类选择对应的 Clash/Mihomo、Surge、Loon、Shadowrocket、Quantumult X 或 sing-box 格式 |
+| 使用自己的 `.dat` 文件 | 选择“自定义”来源，填写公开的 HTTPS 下载地址 |
 
-保存后，推送到 `main` 会触发生产部署。开启预览构建后，其他分支和拉取请求会运行预览命令并生成独立的预览地址。本地预览仍使用 `npm run dev`。
+## 如何使用
 
-Worker 已在 `wrangler.jsonc` 开启请求与异常日志。遇到间歇性 5xx 时，在 Cloudflare 控制台打开 **Workers & Pages → geosite2rule → Observability**，按时间、请求路径和执行结果筛选；也可在终端运行 `npx wrangler tail geosite2rule --format=pretty` 查看实时日志。排查完毕后，可调低 `head_sampling_rate` 减少日志量。
+1. 打开 [Demo](https://geo2rule.ameu.net/)，选择 **Geosite** 或 **GeoIP**。
+2. 选择数据来源。默认使用 [Loyalsoldier](https://github.com/Loyalsoldier/v2ray-rules-dat)，也可选择 V2Fly 或自定义 `.dat` 地址。
+3. 搜索并选择分类。Geosite 可进一步选择要包含或排除的属性；GeoIP 没有属性。
+4. 选择客户端格式，复制生成的订阅地址，填入客户端的远程规则集配置。
 
-## 接口
+常用地址示例：
 
-| 地址 | 输出 | 用途 |
-| --- | --- | --- |
-| `/categories?type=geosite` | JSON | Geosite 分类 |
-| `/categories?type=geoip` | JSON | GeoIP 分类 |
-| `/attributes/google` | JSON | Geosite 分类可用属性 |
-| `/version?type=geosite` | JSON | 数据源版本日期；GeoIP 可用 `type=geoip` |
-| `/rules/clash/google.yaml` | YAML | Clash/Mihomo `classical` provider |
-| `/rules/clash-text/google.list` | 文本 | Mihomo `classical`、`format: text` provider |
-| `/rules/surge/google.list` | 文本 | Surge `RULE-SET` |
-| `/rules/mrs/google.mrs` | MRS | Mihomo `domain`、`format: mrs` provider |
-| `/rules/quantumult-x/google.list` | 文本 | Quantumult X `[filter_remote]` |
-| `/rules/loon/google.list` | 文本 | Loon `[Remote Rule]` |
-| `/rules/shadowrocket/google.list` | 文本 | Shadowrocket `RULE-SET` |
-| `/rules/sing-box/google.json` | JSON | sing-box `source` 规则集 |
-| `/rules/geoip/clash/cn.yaml` | YAML | Mihomo `ipcidr` provider |
-| `/rules/geoip/clash-text/cn.list` | 文本 | Mihomo `ipcidr`、`format: text` provider |
-| `/rules/geoip/surge/cn.list` | 文本 | Surge IP `RULE-SET` |
-| `/rules/geoip/mrs/cn.mrs` | MRS | Mihomo `ipcidr`、`format: mrs` provider |
-| `/rules/geoip/quantumult-x/cn.list` | 文本 | Quantumult X IPv4/IPv6 CIDR |
-| `/rules/geoip/loon/cn.list` | 文本 | Loon IPv4/IPv6 CIDR |
-| `/rules/geoip/shadowrocket/cn.list` | 文本 | Shadowrocket IPv4/IPv6 CIDR |
-| `/rules/geoip/sing-box/cn.json` | JSON | sing-box `ip_cidr` 规则集 |
+| 用途 | Demo 地址 |
+| --- | --- |
+| Mihomo/Clash 域名规则 | [`/rules/clash/google.yaml`](https://geo2rule.ameu.net/rules/clash/google.yaml) |
+| Mihomo MRS 域名规则 | [`/rules/mrs/google.mrs`](https://geo2rule.ameu.net/rules/mrs/google.mrs) |
+| Mihomo/Clash GeoIP 规则 | [`/rules/geoip/clash/cn.yaml`](https://geo2rule.ameu.net/rules/geoip/clash/cn.yaml) |
+| sing-box 域名规则 | [`/rules/sing-box/google.json`](https://geo2rule.ameu.net/rules/sing-box/google.json) |
 
-例如 `/categories?type=geosite&source=v2fly`、`/rules/mrs/google.mrs?source=v2fly` 和 `/rules/clash/google.yaml?source=custom&url=https%3A%2F%2Fexample.com%2Fgeosite.dat`。
-
-分类名不区分大小写。Geosite 可用 `@属性` 筛选，例如 `google@ads`；用 `@-属性` 排除，例如 `google@-ads`。多个属性条件同时生效，MRS 也使用相同的属性筛选。GeoIP 不含属性。
-
-Clash/Mihomo 配置示例：
+例如，在 Mihomo 中订阅 `google` 域名分类：
 
 ```yaml
 rule-providers:
@@ -91,65 +40,58 @@ rule-providers:
     type: http
     behavior: classical
     format: yaml
-    url: https://YOUR-WORKER.example/rules/clash/google.yaml
+    url: https://geo2rule.ameu.net/rules/clash/google.yaml
     interval: 3600
 rules:
   - RULE-SET,google,PROXY
 ```
 
-Surge `[Rule]` 示例：
+长期使用时，把示例中的 Demo 域名换成自己部署后的域名，并把 `PROXY` 换成自己的策略组。若使用 MRS，请选择 `behavior: domain`、`format: mrs`；GeoIP MRS 则使用 `behavior: ipcidr`。
 
-```ini
-RULE-SET,https://YOUR-WORKER.example/rules/surge/google.list,PROXY
+### 格式和来源说明
+
+- 网页会按所选客户端生成正确的地址。Clash/Mihomo 支持 YAML、文本和 MRS；sing-box 使用 JSON；其他客户端使用各自的规则列表。
+- 域名正则规则并非所有格式都支持。不支持的规则会被跳过；如果所选分类无法生成任何有效规则，接口会返回错误。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 可查看生成和跳过的数量。
+- 自定义来源需是公开 HTTPS 地址，使用默认 HTTPS 端口，单个 `.dat` 文件不超过 32 MiB。请使用可信的数据来源。
+- 首页显示的数据更新时间取决于上游是否提供可靠日期；“暂无日期”不代表数据为空。
+
+## Fork 后自部署
+
+需要 GitHub 账号、Cloudflare 账号和本地 Node.js 环境。先克隆自己的 Fork，其余命令在仓库根目录执行。
+
+1. [Fork 本仓库](https://github.com/IamAbler/geosite2Rule/fork)，将下方的 `your-github-name` 换成自己的 GitHub 用户名，克隆 Fork、安装依赖并登录 Cloudflare：
+
+   ```sh
+   git clone https://github.com/your-github-name/geosite2Rule.git
+   cd geosite2Rule
+   npm install
+   npx wrangler login
+   ```
+
+2. 打开 `wrangler.jsonc`，将 `name` 改为自己的 Worker 名称，例如 `geosite2rule-yourname`。创建自己的 KV 和 D1 资源：
+
+   ```sh
+   npx wrangler kv namespace create RULE_CACHE
+   npx wrangler d1 create geosite2rule-cache
+   ```
+
+3. 将命令返回的 KV `id` 和 D1 `database_id` 写入 `wrangler.jsonc`，**替换仓库中现有的 ID**。绑定名保持 `RULE_CACHE` 和 `RULE_DB`；如果更改了 D1 数据库名，也要同步修改配置和下面的命令。
+
+   `wrangler.jsonc` 中的资源 ID 可以随 Fork 公开，但它们必须属于你自己的 Cloudflare 账号。不要把 API Token、密码等写进配置文件或提交到 Git；如需添加敏感值，请使用 [Cloudflare Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)。
+
+4. 初始化自己的远程数据库：
+
+   ```sh
+   npx wrangler d1 migrations apply geosite2rule-cache --remote
+   ```
+
+5. 运行 `npm run build`，把修改后的 `wrangler.jsonc` 提交并推送到自己的 Fork。在 Cloudflare **Workers & Pages → Create application → Import a repository** 中选择这个 Fork。Worker 名称须与 `wrangler.jsonc` 的 `name` 一致；仓库根目录作为项目目录，构建命令填 `npm run build`，部署命令填 `npx wrangler deploy`。之后推送到生产分支即可自动更新。也可以直接运行 `npm run deploy` 手动发布。
+
+首次部署后，打开自己的 Worker 地址，按上面的使用步骤生成订阅链接。Cloudflare 的 [Git 部署说明](https://developers.cloudflare.com/workers/ci-cd/builds/)、[KV 创建说明](https://developers.cloudflare.com/kv/get-started/) 和 [D1 创建说明](https://developers.cloudflare.com/d1/get-started/) 可供参考。
+
+本地预览可运行：
+
+```sh
+npx wrangler d1 migrations apply geosite2rule-cache --local
+npm run dev
 ```
-
-Quantumult X `[filter_remote]` 示例：
-
-```ini
-https://YOUR-WORKER.example/rules/quantumult-x/google.list, tag=google, force-policy=proxy, enabled=true
-```
-
-Loon `[Remote Rule]` 示例：
-
-```ini
-https://YOUR-WORKER.example/rules/loon/google.list,policy=PROXY,enabled=true
-```
-
-Shadowrocket `[Rule]` 示例：
-
-```ini
-RULE-SET,https://YOUR-WORKER.example/rules/shadowrocket/google.list,PROXY
-```
-
-sing-box 的 `route` 配置片段：
-
-```json
-{
-  "rule_set": [{ "type": "remote", "tag": "google", "format": "source", "url": "https://YOUR-WORKER.example/rules/sing-box/google.json" }],
-  "rules": [{ "rule_set": "google", "action": "route", "outbound": "proxy" }]
-}
-```
-
-将示例中的 `PROXY`、`proxy` 或 `outbound` 换成自己的策略或出站标签。Quantumult X 列表按其规则格式携带默认 `proxy` 策略，`force-policy` 可覆盖它；GeoIP 的 IPv6 规则使用 `ip6-cidr`。Loon 与 Shadowrocket 使用独立的订阅地址及各自的配置示例，其列表内容与 Surge 的普通规则格式相同。sing-box 输出 `version: 1` 的 source JSON，可作为远程规则集直接引用；域名正则会写入 `domain_regex`，实际能否匹配取决于 sing-box 的正则语法。
-
-Mihomo MRS 配置示例：
-
-```yaml
-rule-providers:
-  google:
-    type: http
-    behavior: domain
-    format: mrs
-    url: https://YOUR-WORKER.example/rules/mrs/google@ads.mrs
-    interval: 3600
-  cn_ip:
-    type: http
-    behavior: ipcidr
-    format: mrs
-    url: https://YOUR-WORKER.example/rules/geoip/mrs/cn.mrs
-    interval: 3600
-```
-
-`domain`、`full`、`keyword` 分别转换为 `DOMAIN-SUFFIX`、`DOMAIN`、`DOMAIN-KEYWORD`。Clash/Mihomo classical 中的 `regexp` 转为 `DOMAIN-REGEX`；Surge、Quantumult X、Loon 与 Shadowrocket 输出会跳过域名正则。MRS 只支持 `domain` 与 `ipcidr` 行为：Geosite MRS 可保留完整域名和域名后缀，`keyword`、`regexp` 及无法编码为 ASCII 域名的值会跳过。MRS 使用有效的 Zstandard 原始块封装，文件通常比 Mihomo 自带转换器生成的压缩 MRS 大。规则值含逗号或换行时，文本格式也会跳过，以避免输出无效规则。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 显示结果数量。单个源文件上限为 32 MiB。
-
-Loyalsoldier 与 V2Fly 的版本日期取自各自 GitHub Release 对应文件的更新时间；自定义源尝试读取 `Last-Modified` 响应头。数据源没有可靠日期时，首页会显示“暂无日期”。
