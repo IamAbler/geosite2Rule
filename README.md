@@ -1,16 +1,18 @@
 # geosite2Rule Worker
 
-Cloudflare Worker：从 `geosite.dat` 和 `geoip.dat` 读取分类，实时生成 Clash/Mihomo、Surge 与 Mihomo MRS 规则集。首页提供搜索分类、属性筛选、格式选择和订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
+Cloudflare Worker：从 `geosite.dat` 和 `geoip.dat` 读取分类，实时生成 Clash/Mihomo、Surge 与 Mihomo MRS 规则集。Vue 首页提供搜索分类、属性筛选、格式选择和订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
 
 ## 本地运行与手动部署
 
 ```sh
 npm install
+npm run build
 npm run dev       # 本地预览
 npm run deploy
+npm run preview   # 发布当前分支的 Cloudflare Preview
 ```
 
-部署前可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，指向其他兼容的 HTTPS 数据文件。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。无需 KV、R2 或数据库。
+Vite 将 Vue 前端构建到 `dist/`，Wrangler 通过静态资源绑定提供页面；Worker 继续处理规则集接口。部署前可在 `wrangler.jsonc` 修改 `SOURCE_URL` 与 `GEOIP_URL`，指向其他兼容的 HTTPS 数据文件。转换结果在边缘节点缓存 1 小时，源文件请求也缓存 1 小时。无需 KV、R2 或数据库。
 
 ## Cloudflare Workers Git 部署配置
 
@@ -18,7 +20,7 @@ npm run deploy
 
 | 配置项 | 填写内容 |
 | --- | --- |
-| 构建命令（Build command） | 留空；此项目没有独立构建步骤，Wrangler 会在部署时打包 Worker |
+| 构建命令（Build command） | `npm run build` |
 | 部署命令（Deploy command） | `npx wrangler deploy` |
 | 预览命令（Preview command） | `npx wrangler preview` |
 

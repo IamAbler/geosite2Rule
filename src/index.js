@@ -1,7 +1,6 @@
 import { listCategories, listAttributes, readCategory } from "./geosite.js";
 import { listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
-import { page } from "./ui.js";
 
 const DEFAULT_SITE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat";
 const DEFAULT_IP = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat";
@@ -141,7 +140,7 @@ export default {
   async fetch(request, env, ctx) {
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
     const url = new URL(request.url);
-    if (url.pathname === "/") return forHead(request, new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } }));
+    if (url.pathname === "/") return env.ASSETS.fetch(request);
 
     const isCategories = url.pathname === "/categories";
     const isVersion = url.pathname === "/version";
