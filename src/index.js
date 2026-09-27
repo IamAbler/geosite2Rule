@@ -263,7 +263,16 @@ function forHead(request, response) {
   return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }
 
+function observed(request, response, layer, startedAt) {
+  const headers = new Headers(response.headers);
+  headers.set("x-cache-layer", layer);
+  headers.set("server-timing", `worker;dur=${(performance.now() - startedAt).toFixed(1)};desc="wall time"`);
+  return forHead(request, new Response(request.method === "HEAD" ? null : response.body,
+    { status: response.status, statusText: response.statusText, headers }));
+}
+
 async function handleRequest(request, env, ctx) {
+    const startedAt = performance.now();
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
     if (request.url.length > 4096) return json({ error: "Request URL is too long" }, 414);
     const url = new URL(request.url);
@@ -309,7 +318,7 @@ async function handleRequest(request, env, ctx) {
     const cacheKey = new Request(cacheUrl);
     if (cache) {
       const hit = await cache.match(cacheKey);
-      if (hit) return forHead(request, hit);
+      if (hit) return observed(request, hit, "edge", startedAt);
     }
 
     try {
@@ -326,7 +335,7 @@ async function handleRequest(request, env, ctx) {
           const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
           if (hit) {
             if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-            return forHead(request, hit);
+            return observed(request, hit, "d1", startedAt);
           }
         } else {
           fetched = await sourceBytes(choice);
@@ -336,7 +345,7 @@ async function handleRequest(request, env, ctx) {
           const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
           if (hit) {
             if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-            return forHead(request, hit);
+            return observed(request, hit, "d1", startedAt);
           }
         }
       }
@@ -354,7 +363,7 @@ async function handleRequest(request, env, ctx) {
             if (hit) {
               if (choice.id === "custom") hit.headers.set("cache-control", `public, max-age=${CACHE_SECONDS}`);
               if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
-              return forHead(request, hit);
+              return observed(request, hit, "d1", startedAt);
             }
           }
         }
@@ -390,7 +399,7 @@ async function handleRequest(request, env, ctx) {
       if (persistent && choice.id !== "custom" && sha) {
         ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname), response.clone()));
       }
-      return forHead(request, response);
+      return observed(request, response, "convert", startedAt);
     } catch (error) {
       console.error(error);
       if (error.message?.startsWith("MRS requires")) return json({ error: error.message }, 422);

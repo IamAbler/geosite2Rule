@@ -31,7 +31,7 @@ function ipData(inverse = false) {
   return new Uint8Array(field(1, country));
 }
 
-async function request(path, fetcher) {
+async function request(path, fetcher, env = {}) {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
@@ -40,7 +40,7 @@ async function request(path, fetcher) {
   };
   try {
     const pending = [];
-    const response = await worker.fetch(new Request(`https://worker.test${path}`), {}, {
+    const response = await worker.fetch(new Request(`https://worker.test${path}`), env, {
       waitUntil(promise) { pending.push(promise); }
     });
     await Promise.all(pending);
@@ -99,6 +99,44 @@ test("allows validated public redirects and converts valid rules", async () => {
   assert.match(await response.text(), /DOMAIN-SUFFIX,example.org/);
   assert.equal(calls.length, 2);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-cache-layer"), "convert");
+  assert.match(response.headers.get("server-timing"), /^worker;dur=\d+(?:\.\d+)?;desc="wall time"$/);
+});
+
+test("reports edge hits without persisting the previous response label", async () => {
+  const originalCaches = globalThis.caches;
+  let saved;
+  globalThis.caches = { default: {
+    async match() { return saved?.clone() || null; },
+    async put(_key, response) { saved = response.clone(); }
+  } };
+  try {
+    const source = `https://public.test.org/${Date.now()}/edge.dat`;
+    const path = customPath(source);
+    const first = await request(path, () => new Response(siteData()));
+    const second = await request(path, () => { throw new Error("Cache hit should not fetch"); });
+    assert.equal(first.response.headers.get("x-cache-layer"), "convert");
+    assert.equal(second.response.headers.get("x-cache-layer"), "edge");
+  } finally {
+    globalThis.caches = originalCaches;
+  }
+});
+
+test("reports D1 hits without downloading a source", async () => {
+  const body = new TextEncoder().encode("payload:\n  - DOMAIN,example.org\n");
+  const env = {
+    RULE_CACHE: { async get() { return { sha256: "a".repeat(64), checkedAt: Date.now() }; } },
+    RULE_DB: { prepare(sql) { return { bind() { return {
+      async first() { return { headers: JSON.stringify({ "content-type": "application/yaml" }), part_count: 1, byte_length: body.length }; },
+      async all() { return { results: [{ part: 0, body: [...body] }] }; }
+    }; } }; } }
+  };
+  const { response, calls } = await request("/rules/clash/test.yaml", () => {
+    throw new Error("D1 hit should not download a source");
+  }, env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-cache-layer"), "d1");
+  assert.equal(calls.length, 0);
 });
 
 test("rejects unknown attributes and conversions with no supported rules", async () => {

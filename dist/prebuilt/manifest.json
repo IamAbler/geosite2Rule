@@ -1,0 +1,110 @@
+{
+  "builtAt": "2026-09-27T14:02:59.643Z",
+  "buildKey": "dbfac5be367948d7afe9a45418112bdc635694592ef788bb46d52d1475bd0587",
+  "sources": {
+    "geosite": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat",
+    "geoip": "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat"
+  },
+  "sourceHashes": {
+    "geosite": "a3cf618ad5a7e95b7aa6c397000991d667e389c97131643bfea615e781ed9d26",
+    "geoip": "3cf2236c19063c1c80803368cca5ff589c5033129fdf9ba154230c689b81fc2a"
+  },
+  "entries": [
+    {
+      "path": "/prebuilt/geosite/clash/google.yaml",
+      "type": "geosite",
+      "format": "clash",
+      "category": "google",
+      "rules": 1075,
+      "bytes": 36619
+    },
+    {
+      "path": "/prebuilt/geosite/mrs/google.mrs",
+      "type": "geosite",
+      "format": "mrs",
+      "category": "google",
+      "rules": 1073,
+      "bytes": 14387
+    },
+    {
+      "path": "/prebuilt/geosite/sing-box/google.json",
+      "type": "geosite",
+      "format": "sing-box",
+      "category": "google",
+      "rules": 1075,
+      "bytes": 28714
+    },
+    {
+      "path": "/prebuilt/geosite/clash/geolocation-cn.yaml",
+      "type": "geosite",
+      "format": "clash",
+      "category": "geolocation-cn",
+      "rules": 5387,
+      "bytes": 173895
+    },
+    {
+      "path": "/prebuilt/geosite/mrs/geolocation-cn.mrs",
+      "type": "geosite",
+      "format": "mrs",
+      "category": "geolocation-cn",
+      "rules": 5384,
+      "bytes": 49999
+    },
+    {
+      "path": "/prebuilt/geosite/sing-box/geolocation-cn.json",
+      "type": "geosite",
+      "format": "sing-box",
+      "category": "geolocation-cn",
+      "rules": 5387,
+      "bytes": 125853
+    },
+    {
+      "path": "/prebuilt/geoip/clash/cn.yaml",
+      "type": "geoip",
+      "format": "clash",
+      "category": "cn",
+      "rules": 9612,
+      "bytes": 210766
+    },
+    {
+      "path": "/prebuilt/geoip/mrs/cn.mrs",
+      "type": "geoip",
+      "format": "mrs",
+      "category": "cn",
+      "rules": 9612,
+      "bytes": 210957
+    },
+    {
+      "path": "/prebuilt/geoip/sing-box/cn.json",
+      "type": "geoip",
+      "format": "sing-box",
+      "category": "cn",
+      "rules": 9612,
+      "bytes": 258892
+    },
+    {
+      "path": "/prebuilt/geoip/clash/private.yaml",
+      "type": "geoip",
+      "format": "clash",
+      "category": "private",
+      "rules": 18,
+      "bytes": 341
+    },
+    {
+      "path": "/prebuilt/geoip/mrs/private.mrs",
+      "type": "geoip",
+      "format": "mrs",
+      "category": "private",
+      "rules": 18,
+      "bytes": 618
+    },
+    {
+      "path": "/prebuilt/geoip/sing-box/private.json",
+      "type": "geoip",
+      "format": "sing-box",
+      "category": "private",
+      "rules": 18,
+      "bytes": 497
+    }
+  ]
+}

@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "node scripts/check-prebuilt.mjs && vite build",
+    "build:prebuilt": "node scripts/build-prebuilt.mjs",
+    "measure": "node scripts/measure.mjs",
     "test": "node --test",
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
