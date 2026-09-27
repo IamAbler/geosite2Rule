@@ -13,7 +13,8 @@ const V2FLY_SITE_API = "https://api.github.com/repos/v2fly/domain-list-community
 const V2FLY_IP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const CACHE_SECONDS = 3600;
-const KV_CACHE_SECONDS = 6 * 3600;
+const KV_FRESH_SECONDS = 6 * 3600;
+const KV_RETENTION_SECONDS = 30 * 24 * 3600;
 const MAX_KV_BODY_LENGTH = 8 * 1024 * 1024;
 
 function json(value, status = 200) {
@@ -201,8 +202,7 @@ function forHead(request, response) {
   return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }
 
-export default {
-  async fetch(request, env, ctx) {
+async function handleRequest(request, env, ctx, forceRefresh = false) {
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
     const url = new URL(request.url);
     if (url.pathname === "/") return env.ASSETS.fetch(request);
@@ -238,16 +238,26 @@ export default {
     if (choice.id === "custom") cacheUrl.searchParams.set("url", choice.url);
     const cacheKey = new Request(cacheUrl);
     const kvKey = choice.id === "loyalsoldier" ? `v1:${choice.url}:${cacheUrl.pathname}${cacheUrl.search}` : null;
-    if (cache) {
+    if (!forceRefresh && cache) {
       const hit = await cache.match(cacheKey);
       if (hit) return forHead(request, hit);
     }
-    if (kvKey && env.RULE_CACHE && kvKey.length <= 512) {
+    if (!forceRefresh && kvKey && env.RULE_CACHE && kvKey.length <= 512) {
       try {
         const { value, metadata } = await env.RULE_CACHE.getWithMetadata(kvKey, { type: "arrayBuffer", cacheTtl: 60 });
         if (value && metadata?.headers) {
           const hit = new Response(value, { headers: metadata.headers });
           if (cache) ctx.waitUntil(cache.put(cacheKey, hit.clone()));
+          if (env.RULE_REFRESH && Date.now() - (metadata.refreshedAt || 0) >= KV_FRESH_SECONDS * 1000) {
+            const lockKey = new Request(`${url.origin}/__refresh_lock/${encodeURIComponent(kvKey)}`);
+            if (!cache || !await cache.match(lockKey)) {
+              if (cache) ctx.waitUntil(cache.put(lockKey, new Response("1", { headers: { "cache-control": "max-age=30" } })));
+              ctx.waitUntil(env.RULE_REFRESH.send({
+                path: `${url.pathname}${url.search}`, kvKey, refreshedAt: metadata.refreshedAt || 0
+              })
+                .catch(error => console.warn("Background refresh enqueue failed", error)));
+            }
+          }
           return forHead(request, hit);
         }
       } catch (error) { console.warn("KV cache read unavailable", error); }
@@ -285,15 +295,35 @@ export default {
       if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
       if (kvCacheable && kvKey && env.RULE_CACHE && kvKey.length <= 512) {
         const headers = Object.fromEntries(response.headers);
-        ctx.waitUntil(env.RULE_CACHE.put(kvKey, response.clone().body, {
-          expirationTtl: KV_CACHE_SECONDS, metadata: { headers }
-        }).catch(error => console.warn("KV cache write unavailable", error)));
+        const write = env.RULE_CACHE.put(kvKey, response.clone().body, {
+          expirationTtl: KV_RETENTION_SECONDS, metadata: { headers, refreshedAt: Date.now() }
+        }).catch(error => console.warn("KV cache write unavailable", error));
+        if (forceRefresh) await write;
+        else ctx.waitUntil(write);
       }
       return forHead(request, response);
     } catch (error) {
       console.error(error);
       if (error.message?.startsWith("MRS requires")) return json({ error: error.message }, 422);
       return json({ error: "Could not load or convert geo data" }, 502);
+    }
+}
+
+export default {
+  fetch(request, env, ctx) {
+    return handleRequest(request, env, ctx);
+  },
+  async queue(batch, env, ctx) {
+    for (const message of batch.messages) {
+      const stored = await env.RULE_CACHE.getWithMetadata(message.body.kvKey, { type: "text", cacheTtl: 60 });
+      if (stored.value !== null && (stored.metadata?.refreshedAt || 0) !== message.body.refreshedAt) {
+        message.ack();
+        continue;
+      }
+      const request = new Request(new URL(message.body.path, "https://refresh.internal"));
+      const response = await handleRequest(request, env, ctx, true);
+      if (response.ok) message.ack();
+      else message.retry({ delaySeconds: 60 });
     }
   }
 };
