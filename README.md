@@ -1,6 +1,6 @@
 # geosite2Rule Worker
 
-Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生成 Clash/Mihomo、Surge 与 Mihomo MRS 规则集。Vue 首页提供数据来源、分类、属性与格式选择，以及订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
+Cloudflare Worker：从 Geosite 和 GeoIP `.dat` 文件读取分类，实时生成 Clash/Mihomo、Surge 与 Mihomo MRS 规则集。首页使用 Vue 3 和微软 [Fluent UI Web Components](https://github.com/microsoft/fluentui/tree/master/packages/web-components)，提供数据来源、分类、属性与格式选择，以及订阅地址复制。默认数据来自 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)。
 
 ## 本地运行与手动部署
 
