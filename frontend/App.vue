@@ -237,7 +237,8 @@ onBeforeUnmount(() => {
       <p class="intro-copy">选择分类与格式，生成可直接订阅的规则地址。</p>
     </header>
     <div class="workspace">
-      <section class="panel builder" aria-label="规则集生成器">
+      <div class="rule-column">
+        <section class="panel builder" aria-label="规则集生成器">
         <div class="section-head"><h2>选择规则</h2></div>
         <div class="field">
           <div class="label-row"><strong>数据源</strong></div>
@@ -289,7 +290,9 @@ onBeforeUnmount(() => {
           </div>
           <p class="helper">包含生成 <code>@属性</code>，排除生成 <code>@-属性</code>。</p>
         </div>
-      </section>
+        </section>
+        <section class="panel usage-panel"><h2>配置示例</h2><p class="subtle">{{ format === 'surge' ? '加入 Surge 配置的 [Rule] 区块' : '加入 Clash / Mihomo 的规则提供者' }}</p><pre class="snippet">{{ snippet }}</pre></section>
+      </div>
       <aside class="side">
         <section class="panel output">
           <div class="section-head"><h2>生成地址</h2></div>
@@ -310,7 +313,6 @@ onBeforeUnmount(() => {
           <div class="meta-item"><span class="meta-label">版本日期</span><strong class="meta-value">{{ versionText }}</strong><p class="subtle">{{ versionNote }}</p></div>
           <div class="meta-item"><span class="meta-label">更新频率</span><strong class="meta-value">每小时检查</strong></div>
         </div></section>
-        <section class="panel usage-panel"><h2>配置示例</h2><p class="subtle">{{ format === 'surge' ? '加入 Surge 配置的 [Rule] 区块' : '加入 Clash / Mihomo 的规则提供者' }}</p><pre class="snippet">{{ snippet }}</pre></section>
       </aside>
     </div>
   </main>
