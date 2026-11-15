@@ -1,6 +1,6 @@
 # geosite2Rule
 
-将 Geosite 和 GeoIP `.dat` 数据转换为 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket、sing-box 和 MosDNS 可用的规则集。打开网页选好数据来源、分类与格式，即可复制生成地址。
+将 Geosite 和 GeoIP `.dat` 数据转换为 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket、sing-box、MosDNS 和 SmartDNS 可用的规则集。打开网页选好数据来源、分类与格式，即可复制生成地址。
 
 **Demo：[geo2rule.ameu.net](https://geo2rule.ameu.net/)**
 
@@ -13,7 +13,7 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 | 按域名分类分流 | 选择 Geosite 分类，例如 `google`，生成域名规则集 |
 | 按国家或地区 IP 分流 | 切换到 GeoIP，选择 `cn` 等分类 |
 | 只保留或排除某类域名 | 为 Geosite 分类选择属性，例如包含 `@ads` 或排除 `@-ads` |
-| 给不同客户端提供规则 | 为同一分类选择对应的 Clash/Mihomo、Surge、Loon、Shadowrocket、Quantumult X、sing-box 或 MosDNS 格式 |
+| 给不同客户端提供规则 | 为同一分类选择对应的 Clash/Mihomo、Surge、Loon、Shadowrocket、Quantumult X、sing-box、MosDNS 或 SmartDNS 格式 |
 | 使用自己的 `.dat` 文件 | 选择“自定义”来源，填写公开的 HTTPS 下载地址 |
 
 ## 如何使用
@@ -33,6 +33,8 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 | sing-box 域名规则 | [`/rules/sing-box/google.json`](https://geo2rule.ameu.net/rules/sing-box/google.json) |
 | MosDNS 域名规则集 | [`/rules/mosdns/google.txt`](https://geo2rule.ameu.net/rules/mosdns/google.txt) |
 | MosDNS GeoIP 规则集 | [`/rules/geoip/mosdns/cn.txt`](https://geo2rule.ameu.net/rules/geoip/mosdns/cn.txt) |
+| SmartDNS 域名分流配置 | [`/rules/smartdns/google.conf?upstream=223.5.5.5`](https://geo2rule.ameu.net/rules/smartdns/google.conf?upstream=223.5.5.5) |
+| SmartDNS GeoIP CIDR 清单 | [`/rules/geoip/smartdns/cn.txt`](https://geo2rule.ameu.net/rules/geoip/smartdns/cn.txt) |
 
 例如，在 Mihomo 中订阅 `google` 域名分类：
 
@@ -56,9 +58,15 @@ rules:
 
 MosDNS 规则集只保存匹配规则；选择的上游地址会放入配置示例中的 `forward` 插件。域名规则需要通过 `qname` 匹配器加入主 `sequence`，并放在默认转发分支之前。
 
+### SmartDNS 规则集
+
+在网页选择 **SmartDNS** 格式，Geosite 会生成可由 `conf-file` 引入的配置片段，包含指定上游和域名分流规则。默认上游是 `223.5.5.5`，也可填写 SmartDNS 支持的服务器地址，例如 `tls://dns.google:853` 或 `https://dns.google/dns-query`。域名后缀会生成为 `nameserver /example.org/geo2rule`，完整域名会生成为 `nameserver /-www.example.org/geo2rule`；关键词和正则类型无法由 SmartDNS 直接匹配，会被跳过。
+
+GeoIP 会输出原始 CIDR 清单，可通过网页给出的 `ip-set -name geo2rule -type list -file ...` 指令加载，并在 SmartDNS 的 IP 规则中引用。
+
 ### 格式和来源说明
 
-- 网页会按所选客户端生成正确的地址。Clash/Mihomo 支持 YAML、文本和 MRS；sing-box 使用 JSON；MosDNS 输出可由 `domain_set` / `ip_set` 插件加载的规则文件；其他客户端使用各自的规则列表。
+- 网页会按所选客户端生成正确的地址。Clash/Mihomo 支持 YAML、文本和 MRS；sing-box 使用 JSON；MosDNS 输出可由 `domain_set` / `ip_set` 插件加载的规则文件；SmartDNS 输出可引入的分流配置或 `ip-set` CIDR 清单；其他客户端使用各自的规则列表。
 - 域名正则规则并非所有格式都支持。不支持的规则会被跳过；如果所选分类无法生成任何有效规则，接口会返回错误。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 可查看生成和跳过的数量。
 - 自定义来源需是公开 HTTPS 地址，使用默认 HTTPS 端口，单个 `.dat` 文件不超过 32 MiB。请使用可信的数据来源。
 - 规则缓存每天北京时间 09:00 到期；通常会先返回上一版并在后台刷新，缓存过期较久时可能需要等待更新完成。

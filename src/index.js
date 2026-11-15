@@ -2,7 +2,7 @@ import { indexSiteCategories, listCategories, listAttributes, readCategory } fro
 import { indexIpCategories, listIpCategories, readIpCategory } from "./geoip.js";
 import { domainMrs, ipMrs } from "./mrs.js";
 import { CACHE_VERSION, dailyCachePolicy, getResult, getSourceMetadata, metadataKey, putResult, putSourceMetadata, resultKey, sha256 } from "./cache.js";
-import { checkedUrl, validAttributeName, validCategoryName } from "./validation.js";
+import { checkedDnsUpstream, checkedUrl, validAttributeName, validCategoryName } from "./validation.js";
 
 const DEFAULT_SITE = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat";
 const DEFAULT_IP = "https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat";
@@ -234,8 +234,20 @@ function singBox(fields) {
   return { body: JSON.stringify({ version: 1, rules: count ? [rule] : [] }, null, 2) + "\n", count, skipped: 0 };
 }
 
-function renderSite(domains, format) {
+function renderSite(domains, format, smartdnsUpstream = "223.5.5.5") {
   if (format === "mrs") return domainMrs(domains);
+  if (format === "smartdns") {
+    const group = "geo2rule";
+    const lines = new Set();
+    let skipped = 0;
+    for (const { type, value } of domains) {
+      if ((type !== 2 && type !== 3) || invalidRuleValue(value, type)) { skipped++; continue; }
+      lines.add(`nameserver /${type === 3 ? "-" : ""}${value}/${group}`);
+    }
+    const rules = [...lines].sort();
+    const body = [`server ${smartdnsUpstream} -group ${group}`, ...rules].join("\n") + "\n";
+    return { body, count: rules.length, skipped };
+  }
   if (format === "mosdns") {
     const matchers = ["keyword", "regexp", "domain", "full"];
     const lines = new Set();
@@ -280,7 +292,7 @@ function renderSite(domains, format) {
 function renderIp(data, format) {
   if (format === "mrs") return ipMrs(data.networks);
   const unique = [...new Set(data.cidrs)].sort();
-  if (format === "mosdns") return { body: `${unique.join("\n")}${unique.length ? "\n" : ""}`, count: unique.length, skipped: 0 };
+  if (format === "mosdns" || format === "smartdns") return { body: `${unique.join("\n")}${unique.length ? "\n" : ""}`, count: unique.length, skipped: 0 };
   if (format === "sing-box") return singBox({ ip_cidr: unique });
   const rules = format === "quantumult-x"
     ? unique.map(cidr => `${cidr.includes(":") ? "ip6-cidr" : "ip-cidr"},${cidr},proxy`)
@@ -354,7 +366,7 @@ async function handleRequest(request, env, ctx) {
     const isCategories = url.pathname === "/categories";
     const isVersion = url.pathname === "/version";
     const attributeMatch = /^\/attributes\/([^/]+)$/.exec(url.pathname);
-    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs|mosdns|quantumult-x|loon|shadowrocket|sing-box)\/([^/]+)\.(yaml|list|txt|mrs|json)$/.exec(url.pathname);
+    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs|mosdns|smartdns|quantumult-x|loon|shadowrocket|sing-box)\/([^/]+)\.(yaml|list|txt|mrs|json|conf)$/.exec(url.pathname);
     if (!isCategories && !isVersion && !attributeMatch && !ruleMatch) return json({ error: "Not found" }, 404);
 
     const type = ruleMatch ? (ruleMatch[1] ? "geoip" : "geosite") : attributeMatch ? "geosite" : url.searchParams.get("type") || "geosite";
@@ -364,8 +376,13 @@ async function handleRequest(request, env, ctx) {
     catch (error) { return json({ error: error.message }, 400); }
     const format = ruleMatch?.[2];
     const extension = ruleMatch?.[4];
-    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : format === "sing-box" ? extension !== "json" : format === "mosdns" ? extension !== "txt" : extension !== "list" && extension !== "txt")) {
+    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : format === "sing-box" ? extension !== "json" : format === "mosdns" ? extension !== "txt" : format === "smartdns" ? extension !== (type === "geoip" ? "txt" : "conf") : extension !== "list" && extension !== "txt")) {
       return json({ error: "Invalid extension for format" }, 400);
+    }
+    let smartdnsUpstream = null;
+    if (format === "smartdns" && type === "geosite") {
+      try { smartdnsUpstream = checkedDnsUpstream(url.searchParams.has("upstream") ? url.searchParams.get("upstream") : "223.5.5.5"); }
+      catch (error) { return json({ error: error.message }, 400); }
     }
 
     let selected;
@@ -379,7 +396,7 @@ async function handleRequest(request, env, ctx) {
     const cacheUrl = new URL(url.origin);
     if (ruleMatch) {
       const name = [selected.category, ...selected.include, ...selected.exclude.map(value => `-${value}`)].join("@");
-      const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : format === "mosdns" ? "txt" : "list";
+      const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : format === "mosdns" ? "txt" : format === "smartdns" ? (type === "geoip" ? "txt" : "conf") : "list";
       cacheUrl.pathname = `/rules/${type === "geoip" ? "geoip/" : ""}${format}/${encodeURIComponent(name)}.${suffix}`;
     } else if (attributeMatch) {
       cacheUrl.pathname = `/attributes/${encodeURIComponent(selected.category)}`;
@@ -388,6 +405,8 @@ async function handleRequest(request, env, ctx) {
     if (choice.id !== "loyalsoldier") cacheUrl.searchParams.set("source", choice.id);
     cacheUrl.searchParams.set("source_url", choice.url);
     cacheUrl.searchParams.set("cache_version", CACHE_VERSION);
+    if (smartdnsUpstream) cacheUrl.searchParams.set("upstream", smartdnsUpstream);
+    const resultCachePath = cacheUrl.pathname + (smartdnsUpstream ? `?upstream=${encodeURIComponent(smartdnsUpstream)}` : "");
     const cacheKey = new Request(cacheUrl);
     if (cache) {
       const hit = await cache.match(cacheKey);
@@ -406,7 +425,7 @@ async function handleRequest(request, env, ctx) {
         const metadata = await getSourceMetadata(env.RULE_CACHE, metaKey);
         if (metadata) {
           sha = metadata.sha256;
-          const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+          const hit = await getResult(env.RULE_DB, resultKey(type, sha, resultCachePath));
           if (hit) {
             const policy = dailyCachePolicy(Date.now(), metadata.freshUntil);
             const response = withCachePolicy(hit, policy);
@@ -416,7 +435,7 @@ async function handleRequest(request, env, ctx) {
         } else {
           ({ fetched, sha: fetchedSha } = await refreshSourceMetadata(env, metaKey, choice, type));
           sha = fetchedSha;
-          const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+          const hit = await getResult(env.RULE_DB, resultKey(type, sha, resultCachePath));
           if (hit) {
             const sourceExpiresAt = dailyCachePolicy(fetched.checkedAt).expiresAt;
             const policy = dailyCachePolicy(Date.now(), sourceExpiresAt);
@@ -438,7 +457,7 @@ async function handleRequest(request, env, ctx) {
           if (actualSha !== sha) {
             sha = actualSha;
             if (metaKey) await persistSourceMetadata(env, metaKey, source, actualSha);
-            const hit = await getResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname));
+            const hit = await getResult(env.RULE_DB, resultKey(type, sha, resultCachePath));
             if (hit) {
               const policy = dailyCachePolicy(Date.now(), source.expiresAt);
               const response = withCachePolicy(hit, policy);
@@ -469,7 +488,7 @@ async function handleRequest(request, env, ctx) {
             }
           }
           const data = readCategory(bytes, selected.category, selected.include, selected.exclude, index);
-          const result = renderSite(data.domains, format);
+          const result = renderSite(data.domains, format, smartdnsUpstream);
           if (!result.count) return json({ error: "No rules can be converted for this category" }, 422);
           response = responseForRules(result, format);
         }
@@ -478,7 +497,7 @@ async function handleRequest(request, env, ctx) {
       response = withCachePolicy(response, policy);
       if (cache) ctx.waitUntil(cache.put(cacheKey, response.clone()));
       if (persistent && choice.id !== "custom" && sha) {
-        ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, cacheUrl.pathname), response.clone(), policy.expiresAt));
+        ctx.waitUntil(putResult(env.RULE_DB, resultKey(type, sha, resultCachePath), response.clone(), policy.expiresAt));
       }
       return observed(request, response, "convert", startedAt);
     } catch (error) {

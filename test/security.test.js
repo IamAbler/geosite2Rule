@@ -155,6 +155,66 @@ test("converts GeoIP categories to MosDNS ip_set CIDRs", async () => {
   assert.equal(await response.text(), "1.2.3.0/24\n");
 });
 
+test("converts Geosite suffix and exact rules to SmartDNS config", async () => {
+  const source = `https://public.test.org/${Date.now()}/smartdns.dat`;
+  const bytes = siteDataWithDomains([
+    { type: 0, value: "keyword.example" },
+    { type: 1, value: "^.*\\.regex$" },
+    { type: 2, value: "example.org" },
+    { type: 3, value: "www.example.org" },
+    { type: 2, value: "example.org" }
+  ]);
+  const path = `/rules/smartdns/test.conf?source=custom&url=${encodeURIComponent(source)}&upstream=${encodeURIComponent("tls://dns.example.org:853")}`;
+  const { response } = await request(path, () => new Response(bytes));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(response.headers.get("x-rule-count"), "2");
+  assert.equal(response.headers.get("x-skipped-rules"), "2");
+  assert.equal(await response.text(), [
+    "server tls://dns.example.org:853 -group geo2rule",
+    "nameserver /-www.example.org/geo2rule",
+    "nameserver /example.org/geo2rule",
+    ""
+  ].join("\n"));
+});
+
+test("rejects unsafe SmartDNS upstream values before fetching the source", async () => {
+  const source = `https://public.test.org/${Date.now()}/smartdns-invalid.dat`;
+  const path = `/rules/smartdns/test.conf?source=custom&url=${encodeURIComponent(source)}&upstream=223.5.5.5%0Aserver%208.8.8.8`;
+  const { response, calls } = await request(path, () => new Response(siteData()));
+  assert.equal(response.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test("converts SmartDNS GeoIP categories to ip-set CIDRs", async () => {
+  const source = `https://public.test.org/${Date.now()}/smartdns-geoip.dat`;
+  const path = `/rules/geoip/smartdns/cn.txt?source=custom&url=${encodeURIComponent(source)}`;
+  const { response } = await request(path, () => new Response(ipData()));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-rule-count"), "1");
+  assert.equal(await response.text(), "1.2.3.0/24\n");
+});
+
+test("separates SmartDNS edge cache entries by upstream address", async () => {
+  const originalCaches = globalThis.caches;
+  const entries = new Map();
+  globalThis.caches = { default: {
+    async match(key) { return entries.get(key.url)?.clone() || null; },
+    async put(key, response) { entries.set(key.url, response.clone()); }
+  } };
+  try {
+    const source = `https://public.test.org/${Date.now()}/smartdns-cache.dat`;
+    const base = `/rules/smartdns/test.conf?source=custom&url=${encodeURIComponent(source)}`;
+    const first = await request(base + "&upstream=223.5.5.5", () => new Response(siteData()));
+    const second = await request(base + "&upstream=119.29.29.29", () => new Response(siteData()));
+    assert.match(await first.response.text(), /^server 223\.5\.5\.5 -group geo2rule/);
+    assert.match(await second.response.text(), /^server 119\.29\.29\.29 -group geo2rule/);
+    assert.equal(entries.size, 2);
+  } finally {
+    globalThis.caches = originalCaches;
+  }
+});
+
 test("reports edge hits without persisting the previous response label", async () => {
   const originalCaches = globalThis.caches;
   let saved;

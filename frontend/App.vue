@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { checkedMosdnsUpstream, checkedUrl } from "../src/validation.js";
+import { checkedDnsUpstream, checkedMosdnsUpstream, checkedUrl } from "../src/validation.js";
 
 const sourceType = ref("geosite");
 const provider = ref("loyalsoldier");
@@ -8,7 +8,7 @@ const customDraft = ref({ geosite: "", geoip: "" });
 const customApplied = ref({ geosite: "", geoip: "" });
 const customError = ref("");
 const format = ref("clash");
-const mosdnsUpstream = ref("223.5.5.5");
+const dnsUpstream = ref("223.5.5.5");
 const categories = ref([]);
 const category = ref("");
 const categoryQuery = ref("");
@@ -39,7 +39,8 @@ const formats = [
   { id: "loon", title: "Loon" },
   { id: "shadowrocket", title: "Shadowrocket" },
   { id: "sing-box", title: "sing-box" },
-  { id: "mosdns", title: "MosDNS" }
+  { id: "mosdns", title: "MosDNS" },
+  { id: "smartdns", title: "SmartDNS" }
 ];
 
 const matches = computed(() => {
@@ -61,19 +62,25 @@ const sourceParameters = computed(() => {
   return params.toString();
 });
 const providerName = computed(() => ({ loyalsoldier: "Loyalsoldier", v2fly: "V2Fly", custom: "自定义" })[provider.value]);
-function endpoint(path, type = null) {
+function endpoint(path, type = null, extra = {}) {
   const params = new URLSearchParams(sourceParameters.value || "");
   if (type) params.set("type", type);
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
   const query = params.toString();
   return path + (query ? "?" + query : "");
 }
 const selectedAttributes = computed(() => Object.entries(attributeModes.value).filter(([, mode]) => mode));
-const mosdnsUpstreamValid = computed(() => {
-  try { checkedMosdnsUpstream(mosdnsUpstream.value); return true; }
+const dnsUpstreamValid = computed(() => {
+  try {
+    if (format.value === "smartdns") checkedDnsUpstream(dnsUpstream.value);
+    else checkedMosdnsUpstream(dnsUpstream.value);
+    return true;
+  }
   catch { return false; }
 });
 const ruleUrl = computed(() => {
   if (!category.value || sourceParameters.value === null) return "";
+  if (["mosdns", "smartdns"].includes(format.value) && sourceType.value === "geosite" && !dnsUpstreamValid.value) return "";
   let name = category.value;
   if (sourceType.value === "geosite") {
     const include = selectedAttributes.value.filter(([, mode]) => mode === "include").map(([attribute]) => attribute).sort();
@@ -81,11 +88,15 @@ const ruleUrl = computed(() => {
     name += [...include, ...exclude.map(attribute => "-" + attribute)].map(attribute => "@" + attribute).join("");
   }
   const path = sourceType.value === "geoip" ? "/rules/geoip/" : "/rules/";
-  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : format.value === "mosdns" ? ".txt" : ".list";
-  return location.origin + endpoint(path + format.value + "/" + encodeURIComponent(name) + extension);
+  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : format.value === "mosdns" ? ".txt" : format.value === "smartdns" ? (sourceType.value === "geoip" ? ".txt" : ".conf") : ".list";
+  const extra = format.value === "smartdns" && sourceType.value === "geosite" ? { upstream: dnsUpstream.value } : {};
+  return location.origin + endpoint(path + format.value + "/" + encodeURIComponent(name) + extension, null, extra);
 });
 const behavior = computed(() => sourceType.value === "geoip" ? "ipcidr" : format.value === "mrs" ? "domain" : "classical");
 const formatNotice = computed(() => {
+  if (format.value === "smartdns") return sourceType.value === "geoip"
+    ? "SmartDNS ip-set 格式，输出可加载的 IPv4/IPv6 CIDR 清单"
+    : "生成可直接引入的 SmartDNS 分流配置；域名关键词和正则不支持，会跳过";
   if (format.value === "mosdns") return sourceType.value === "geoip"
     ? "MosDNS ip_set 格式，输出 IPv4/IPv6 CIDR 清单"
     : "MosDNS domain_set 格式，支持完整域名、后缀、关键词和正则";
@@ -95,9 +106,23 @@ const formatNotice = computed(() => {
 });
 const snippet = computed(() => {
   if (!ruleUrl.value) return "选择分类";
+  if (format.value === "smartdns") {
+    const file = sourceType.value === "geoip" ? "/etc/smartdns/rules/selected-ip.txt" : "/etc/smartdns/rules/selected.conf";
+    const lines = ["# 下载 SmartDNS 规则集", "curl -fsSL " + shellQuote(ruleUrl.value) + " -o " + file, ""];
+    if (sourceType.value === "geoip") return lines.concat([
+      "# 将 CIDR 清单加载为 SmartDNS ip-set",
+      "ip-set -name geo2rule -type list -file " + file,
+      "",
+      "# 可在 ip-rules、ip-alias 等指令中引用 ip-set:geo2rule"
+    ]).join("\n");
+    return lines.concat([
+      "# 在 SmartDNS 主配置中引入文件（文件包含上游 server 和 nameserver 分流规则）",
+      "conf-file " + file
+    ]).join("\n");
+  }
   if (format.value === "mosdns") {
     const file = sourceType.value === "geoip" ? "/etc/mosdns/rules/selected-ip.txt" : "/etc/mosdns/rules/selected-domain.txt";
-    const lines = [`# 下载 MosDNS 规则集`, `curl -fsSL '${ruleUrl.value}' -o ${file}`, ""];
+    const lines = [`# 下载 MosDNS 规则集`, `curl -fsSL ${shellQuote(ruleUrl.value)} -o ${file}`, ""];
     if (sourceType.value === "geoip") return lines.concat([
       "# 将以下插件加入 MosDNS v5 的 plugins",
       "- tag: selected_ips",
@@ -108,7 +133,7 @@ const snippet = computed(() => {
       "",
       "# 在 sequence 中可用 resp_ip $selected_ips 匹配这些地址"
     ]).join("\n");
-    if (!mosdnsUpstreamValid.value) return "请输入有效的 MosDNS 上游地址";
+    if (!dnsUpstreamValid.value) return "请输入有效的 MosDNS 上游地址";
     return lines.concat([
       "# 将以下插件加入 MosDNS v5 的 plugins",
       "- tag: selected_domains",
@@ -120,7 +145,7 @@ const snippet = computed(() => {
       "  type: forward",
       "  args:",
       "    upstreams:",
-      `      - addr: ${JSON.stringify(mosdnsUpstream.value)}`,
+      `      - addr: ${JSON.stringify(dnsUpstream.value)}`,
       "",
       "# 将此分支加入主 sequence，并放在默认上游之前",
       "- matches:",
@@ -143,6 +168,9 @@ const snippet = computed(() => {
     "rules:", "  - RULE-SET,selected,PROXY"
   ].join("\n");
 });
+function shellQuote(value) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
 const versionText = computed(() => {
   if (sourceParameters.value === null) return "待设置";
   if (versionLoading.value) return "读取中…";
@@ -414,18 +442,18 @@ onBeforeUnmount(() => {
               <button v-for="item in formats" :key="item.id" type="button" :class="['format', { active: format === item.id }]"
                 :aria-pressed="format === item.id" @click="format = item.id"><span class="format-title">{{ item.title }}</span><span class="format-check" aria-hidden="true">{{ format === item.id ? '✓' : '' }}</span></button>
             </div>
-            <div v-if="format === 'mosdns' && sourceType === 'geosite'" class="upstream-field">
-              <div class="label-row"><label for="mosdns-upstream">分流上游 DNS 地址</label></div>
-              <fluent-text-input id="mosdns-upstream" appearance="outline" type="text" autocomplete="off"
-                :value="mosdnsUpstream" @input="mosdnsUpstream = $event.target.value; message = ''"></fluent-text-input>
-              <p class="helper">例如 223.5.5.5；配置示例会把匹配到的域名转发到此地址。</p>
-              <p v-if="!mosdnsUpstreamValid" class="custom-error" role="alert">请输入有效的 MosDNS 上游地址。</p>
+            <div v-if="['mosdns', 'smartdns'].includes(format) && sourceType === 'geosite'" class="upstream-field">
+              <div class="label-row"><label for="dns-upstream">分流上游 DNS 地址</label></div>
+              <fluent-text-input id="dns-upstream" appearance="outline" type="text" autocomplete="off"
+                :value="dnsUpstream" @input="dnsUpstream = $event.target.value; message = ''"></fluent-text-input>
+              <p class="helper">例如 223.5.5.5；可指定 udp://、tcp://、tls://、https:// 上游，SmartDNS 也支持 quic://。</p>
+              <p v-if="!dnsUpstreamValid" class="custom-error" role="alert">请输入有效的上游 DNS 地址。</p>
             </div>
             <div class="result">
-              <div class="result-header"><span class="result-label">{{ format === 'mosdns' ? '规则集下载地址' : '订阅地址' }}</span></div>
+              <div class="result-header"><span class="result-label">{{ ['mosdns', 'smartdns'].includes(format) ? '规则集下载地址' : '订阅地址' }}</span></div>
               <p class="url" :class="{ 'url-empty': !ruleUrl }">{{ ruleUrl || '选择分类' }}</p>
               <div class="actions"><fluent-button appearance="primary" :disabled="!ruleUrl" @click="copyUrl">复制地址</fluent-button>
-                <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : format === 'mosdns' ? '下载 MosDNS 规则集' : '预览规则' }} <span aria-hidden="true">↗</span></a></div>
+                <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : format === 'mosdns' ? '下载 MosDNS 规则集' : format === 'smartdns' ? (sourceType === 'geoip' ? '下载 SmartDNS IP 集' : '下载 SmartDNS 配置') : '预览规则' }} <span aria-hidden="true">↗</span></a></div>
             </div>
             <p v-if="message || formatNotice" class="status" role="status">{{ message || formatNotice }}</p>
           </section>
