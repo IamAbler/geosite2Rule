@@ -236,6 +236,18 @@ function singBox(fields) {
 
 function renderSite(domains, format) {
   if (format === "mrs") return domainMrs(domains);
+  if (format === "mosdns") {
+    const matchers = ["keyword", "regexp", "domain", "full"];
+    const lines = new Set();
+    let skipped = 0;
+    for (const { type, value } of domains) {
+      if (!matchers[type] || !value || /[\x00-\x20\x7f\u2028\u2029#]/.test(value) ||
+        ((type === 2 || type === 3) && invalidRuleValue(value, type))) { skipped++; continue; }
+      lines.add(`${matchers[type]}:${value}`);
+    }
+    const rules = [...lines].sort();
+    return { body: `${rules.join("\n")}${rules.length ? "\n" : ""}`, count: rules.length, skipped };
+  }
   if (format === "sing-box") {
     const fields = { domain: new Set(), domain_suffix: new Set(), domain_keyword: new Set(), domain_regex: new Set() };
     let skipped = 0;
@@ -268,6 +280,7 @@ function renderSite(domains, format) {
 function renderIp(data, format) {
   if (format === "mrs") return ipMrs(data.networks);
   const unique = [...new Set(data.cidrs)].sort();
+  if (format === "mosdns") return { body: `${unique.join("\n")}${unique.length ? "\n" : ""}`, count: unique.length, skipped: 0 };
   if (format === "sing-box") return singBox({ ip_cidr: unique });
   const rules = format === "quantumult-x"
     ? unique.map(cidr => `${cidr.includes(":") ? "ip6-cidr" : "ip-cidr"},${cidr},proxy`)
@@ -341,7 +354,7 @@ async function handleRequest(request, env, ctx) {
     const isCategories = url.pathname === "/categories";
     const isVersion = url.pathname === "/version";
     const attributeMatch = /^\/attributes\/([^/]+)$/.exec(url.pathname);
-    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs|quantumult-x|loon|shadowrocket|sing-box)\/([^/]+)\.(yaml|list|txt|mrs|json)$/.exec(url.pathname);
+    const ruleMatch = /^\/rules\/(geoip\/)?(clash|clash-text|surge|mrs|mosdns|quantumult-x|loon|shadowrocket|sing-box)\/([^/]+)\.(yaml|list|txt|mrs|json)$/.exec(url.pathname);
     if (!isCategories && !isVersion && !attributeMatch && !ruleMatch) return json({ error: "Not found" }, 404);
 
     const type = ruleMatch ? (ruleMatch[1] ? "geoip" : "geosite") : attributeMatch ? "geosite" : url.searchParams.get("type") || "geosite";
@@ -351,7 +364,7 @@ async function handleRequest(request, env, ctx) {
     catch (error) { return json({ error: error.message }, 400); }
     const format = ruleMatch?.[2];
     const extension = ruleMatch?.[4];
-    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : format === "sing-box" ? extension !== "json" : extension !== "list" && extension !== "txt")) {
+    if (ruleMatch && (format === "clash" ? extension !== "yaml" : format === "mrs" ? extension !== "mrs" : format === "sing-box" ? extension !== "json" : format === "mosdns" ? extension !== "txt" : extension !== "list" && extension !== "txt")) {
       return json({ error: "Invalid extension for format" }, 400);
     }
 
@@ -366,7 +379,7 @@ async function handleRequest(request, env, ctx) {
     const cacheUrl = new URL(url.origin);
     if (ruleMatch) {
       const name = [selected.category, ...selected.include, ...selected.exclude.map(value => `-${value}`)].join("@");
-      const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : "list";
+      const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : format === "mosdns" ? "txt" : "list";
       cacheUrl.pathname = `/rules/${type === "geoip" ? "geoip/" : ""}${format}/${encodeURIComponent(name)}.${suffix}`;
     } else if (attributeMatch) {
       cacheUrl.pathname = `/attributes/${encodeURIComponent(selected.category)}`;

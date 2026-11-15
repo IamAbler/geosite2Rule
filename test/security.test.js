@@ -26,6 +26,12 @@ function siteData(type = 2, value = "example.org") {
   return new Uint8Array(field(1, category));
 }
 
+function siteDataWithDomains(domains) {
+  const entries = domains.map(({ type, value }) => [8, type, ...field(2, value)]);
+  const category = [...field(1, "test"), ...entries.flatMap(entry => field(2, entry))];
+  return new Uint8Array(field(1, category));
+}
+
 function siteDataWithCategories() {
   const category = (name, value) => [...field(1, name), ...field(2, [8, 2, ...field(2, value)])];
   return new Uint8Array([...field(1, category("test", "example.org")),
@@ -114,6 +120,39 @@ test("allows validated public redirects and converts valid rules", async () => {
   assert.equal(response.headers.get("x-cache-layer"), "convert");
   assert.match(response.headers.get("cache-control"), /^public, max-age=\d+, stale-while-revalidate=86400, stale-if-error=86400$/);
   assert.match(response.headers.get("server-timing"), /^worker;dur=\d+(?:\.\d+)?;desc="wall time"$/);
+});
+
+test("converts Geosite categories to MosDNS domain_set rules", async () => {
+  const source = `https://public.test.org/${Date.now()}/mosdns.dat`;
+  const bytes = siteDataWithDomains([
+    { type: 0, value: "keyword.example" },
+    { type: 1, value: "^.*\\.regex$" },
+    { type: 2, value: "example.org" },
+    { type: 3, value: "www.example.org" },
+    { type: 0, value: "not supported.example" }
+  ]);
+  const path = `/rules/mosdns/test.txt?source=custom&url=${encodeURIComponent(source)}`;
+  const { response } = await request(path, () => new Response(bytes));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(response.headers.get("x-rule-count"), "4");
+  assert.equal(response.headers.get("x-skipped-rules"), "1");
+  assert.equal(await response.text(), [
+    "domain:example.org",
+    "full:www.example.org",
+    "keyword:keyword.example",
+    "regexp:^.*\\.regex$",
+    ""
+  ].join("\n"));
+});
+
+test("converts GeoIP categories to MosDNS ip_set CIDRs", async () => {
+  const source = `https://public.test.org/${Date.now()}/mosdns-geoip.dat`;
+  const path = `/rules/geoip/mosdns/cn.txt?source=custom&url=${encodeURIComponent(source)}`;
+  const { response } = await request(path, () => new Response(ipData()));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-rule-count"), "1");
+  assert.equal(await response.text(), "1.2.3.0/24\n");
 });
 
 test("reports edge hits without persisting the previous response label", async () => {

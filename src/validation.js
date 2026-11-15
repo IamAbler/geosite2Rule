@@ -23,3 +23,43 @@ export function checkedUrl(value, blockedHostname) {
   }
   return url;
 }
+
+const MOSDNS_UPSTREAM_SCHEMES = new Set(["udp:", "tcp:", "tls:", "https:"]);
+
+export function checkedMosdnsUpstream(value) {
+  if (typeof value !== "string" || value.length > 512 || value !== value.trim() ||
+    /[\x00-\x20\x7f\\#]/.test(value)) {
+    throw new Error("Invalid MosDNS upstream address");
+  }
+
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value);
+  if (scheme) {
+    let url;
+    try { url = new URL(value); }
+    catch { throw new Error("Invalid MosDNS upstream address"); }
+    if (!MOSDNS_UPSTREAM_SCHEMES.has(url.protocol) || !url.hostname || url.username || url.password || url.hash) {
+      throw new Error("Invalid MosDNS upstream address");
+    }
+    return value;
+  }
+
+  const ipv6 = /^\[([\da-f:.]+)\](?::(\d{1,5}))?$/i.exec(value);
+  let port = "";
+  if (ipv6) {
+    try { new URL(`http://[${ipv6[1]}]/`); }
+    catch { throw new Error("Invalid MosDNS upstream address"); }
+    port = ipv6[2] || "";
+  } else {
+    const match = /^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::(\d{1,5}))?$/i.exec(value);
+    if (!match || match[1].length > 253 || match[1].split(".").some(label =>
+      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)) ||
+      (/^\d+(?:\.\d+){3}$/.test(match[1]) && match[1].split(".").some(part => Number(part) > 255))) {
+      throw new Error("Invalid MosDNS upstream address");
+    }
+    port = match[2] || "";
+  }
+  if (port && (Number(port) < 1 || Number(port) > 65535)) {
+    throw new Error("Invalid MosDNS upstream address");
+  }
+  return value;
+}

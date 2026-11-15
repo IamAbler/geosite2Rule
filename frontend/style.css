@@ -68,6 +68,8 @@ fluent-divider { display: block; margin-bottom: 25px; }
 .output { padding: 26px; }
 .output .label-row { margin-bottom: 11px; }
 .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.upstream-field { margin-top: 19px; }
+.upstream-field fluent-text-input { display: block; width: 100%; }
 .format { position: relative; display: flex; align-items: center; min-height: 48px; padding: 10px 12px; border: 1px solid var(--colorNeutralStroke1, #d1d1d1); border-radius: var(--borderRadiusMedium, 4px); background: var(--colorNeutralBackground1, #fff); color: var(--colorNeutralForeground1, #242424); text-align: left; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
 .format:hover { border-color: var(--colorBrandStroke1, #0f6cbd); transform: translateY(-1px); }
 .format:focus-visible { outline: 2px solid var(--colorStrokeFocus2, #0f6cbd); outline-offset: 1px; }

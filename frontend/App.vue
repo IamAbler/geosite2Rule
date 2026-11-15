@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { checkedUrl } from "../src/validation.js";
+import { checkedMosdnsUpstream, checkedUrl } from "../src/validation.js";
 
 const sourceType = ref("geosite");
 const provider = ref("loyalsoldier");
@@ -8,6 +8,7 @@ const customDraft = ref({ geosite: "", geoip: "" });
 const customApplied = ref({ geosite: "", geoip: "" });
 const customError = ref("");
 const format = ref("clash");
+const mosdnsUpstream = ref("223.5.5.5");
 const categories = ref([]);
 const category = ref("");
 const categoryQuery = ref("");
@@ -37,7 +38,8 @@ const formats = [
   { id: "quantumult-x", title: "Quantumult X" },
   { id: "loon", title: "Loon" },
   { id: "shadowrocket", title: "Shadowrocket" },
-  { id: "sing-box", title: "sing-box" }
+  { id: "sing-box", title: "sing-box" },
+  { id: "mosdns", title: "MosDNS" }
 ];
 
 const matches = computed(() => {
@@ -66,6 +68,10 @@ function endpoint(path, type = null) {
   return path + (query ? "?" + query : "");
 }
 const selectedAttributes = computed(() => Object.entries(attributeModes.value).filter(([, mode]) => mode));
+const mosdnsUpstreamValid = computed(() => {
+  try { checkedMosdnsUpstream(mosdnsUpstream.value); return true; }
+  catch { return false; }
+});
 const ruleUrl = computed(() => {
   if (!category.value || sourceParameters.value === null) return "";
   let name = category.value;
@@ -75,17 +81,53 @@ const ruleUrl = computed(() => {
     name += [...include, ...exclude.map(attribute => "-" + attribute)].map(attribute => "@" + attribute).join("");
   }
   const path = sourceType.value === "geoip" ? "/rules/geoip/" : "/rules/";
-  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : ".list";
+  const extension = format.value === "clash" ? ".yaml" : format.value === "mrs" ? ".mrs" : format.value === "sing-box" ? ".json" : format.value === "mosdns" ? ".txt" : ".list";
   return location.origin + endpoint(path + format.value + "/" + encodeURIComponent(name) + extension);
 });
 const behavior = computed(() => sourceType.value === "geoip" ? "ipcidr" : format.value === "mrs" ? "domain" : "classical");
 const formatNotice = computed(() => {
+  if (format.value === "mosdns") return sourceType.value === "geoip"
+    ? "MosDNS ip_set 格式，输出 IPv4/IPv6 CIDR 清单"
+    : "MosDNS domain_set 格式，支持完整域名、后缀、关键词和正则";
   if (sourceType.value !== "geosite") return "";
   if (format.value === "mrs") return "跳过 keyword / regexp";
   return ["surge", "quantumult-x", "loon", "shadowrocket"].includes(format.value) ? "跳过 regexp" : "";
 });
 const snippet = computed(() => {
   if (!ruleUrl.value) return "选择分类";
+  if (format.value === "mosdns") {
+    const file = sourceType.value === "geoip" ? "/etc/mosdns/rules/selected-ip.txt" : "/etc/mosdns/rules/selected-domain.txt";
+    const lines = [`# 下载 MosDNS 规则集`, `curl -fsSL '${ruleUrl.value}' -o ${file}`, ""];
+    if (sourceType.value === "geoip") return lines.concat([
+      "# 将以下插件加入 MosDNS v5 的 plugins",
+      "- tag: selected_ips",
+      "  type: ip_set",
+      "  args:",
+      "    files:",
+      `      - ${file}`,
+      "",
+      "# 在 sequence 中可用 resp_ip $selected_ips 匹配这些地址"
+    ]).join("\n");
+    if (!mosdnsUpstreamValid.value) return "请输入有效的 MosDNS 上游地址";
+    return lines.concat([
+      "# 将以下插件加入 MosDNS v5 的 plugins",
+      "- tag: selected_domains",
+      "  type: domain_set",
+      "  args:",
+      "    files:",
+      `      - ${file}`,
+      "- tag: forward_selected",
+      "  type: forward",
+      "  args:",
+      "    upstreams:",
+      `      - addr: ${JSON.stringify(mosdnsUpstream.value)}`,
+      "",
+      "# 将此分支加入主 sequence，并放在默认上游之前",
+      "- matches:",
+      "    - qname $selected_domains",
+      "  exec: $forward_selected"
+    ]).join("\n");
+  }
   if (format.value === "surge" || format.value === "shadowrocket") return "RULE-SET," + ruleUrl.value + ",PROXY";
   if (format.value === "loon") return "[Remote Rule]\n" + ruleUrl.value + ",policy=PROXY,enabled=true";
   if (format.value === "quantumult-x") return "[filter_remote]\n" + ruleUrl.value + ", tag=selected, force-policy=proxy, enabled=true";
@@ -372,11 +414,18 @@ onBeforeUnmount(() => {
               <button v-for="item in formats" :key="item.id" type="button" :class="['format', { active: format === item.id }]"
                 :aria-pressed="format === item.id" @click="format = item.id"><span class="format-title">{{ item.title }}</span><span class="format-check" aria-hidden="true">{{ format === item.id ? '✓' : '' }}</span></button>
             </div>
+            <div v-if="format === 'mosdns' && sourceType === 'geosite'" class="upstream-field">
+              <div class="label-row"><label for="mosdns-upstream">分流上游 DNS 地址</label></div>
+              <fluent-text-input id="mosdns-upstream" appearance="outline" type="text" autocomplete="off"
+                :value="mosdnsUpstream" @input="mosdnsUpstream = $event.target.value; message = ''"></fluent-text-input>
+              <p class="helper">例如 223.5.5.5；配置示例会把匹配到的域名转发到此地址。</p>
+              <p v-if="!mosdnsUpstreamValid" class="custom-error" role="alert">请输入有效的 MosDNS 上游地址。</p>
+            </div>
             <div class="result">
-              <div class="result-header"><span class="result-label">订阅地址</span></div>
+              <div class="result-header"><span class="result-label">{{ format === 'mosdns' ? '规则集下载地址' : '订阅地址' }}</span></div>
               <p class="url" :class="{ 'url-empty': !ruleUrl }">{{ ruleUrl || '选择分类' }}</p>
               <div class="actions"><fluent-button appearance="primary" :disabled="!ruleUrl" @click="copyUrl">复制地址</fluent-button>
-                <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : '预览规则' }} <span aria-hidden="true">↗</span></a></div>
+                <a v-if="ruleUrl" class="secondary" :href="ruleUrl" target="_blank" rel="noopener">{{ format === 'mrs' ? '下载 MRS' : format === 'mosdns' ? '下载 MosDNS 规则集' : '预览规则' }} <span aria-hidden="true">↗</span></a></div>
             </div>
             <p v-if="message || formatNotice" class="status" role="status">{{ message || formatNotice }}</p>
           </section>

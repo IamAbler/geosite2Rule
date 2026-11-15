@@ -1,6 +1,6 @@
 # geosite2Rule
 
-将 Geosite 和 GeoIP `.dat` 数据转换为 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket 和 sing-box 可订阅的规则集。打开网页选好数据来源、分类与格式，即可复制订阅地址。
+将 Geosite 和 GeoIP `.dat` 数据转换为 Clash/Mihomo、Surge、Quantumult X、Loon、Shadowrocket、sing-box 和 MosDNS 可用的规则集。打开网页选好数据来源、分类与格式，即可复制生成地址。
 
 **Demo：[geo2rule.ameu.net](https://geo2rule.ameu.net/)**
 
@@ -13,7 +13,7 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 | 按域名分类分流 | 选择 Geosite 分类，例如 `google`，生成域名规则集 |
 | 按国家或地区 IP 分流 | 切换到 GeoIP，选择 `cn` 等分类 |
 | 只保留或排除某类域名 | 为 Geosite 分类选择属性，例如包含 `@ads` 或排除 `@-ads` |
-| 给不同客户端提供规则 | 为同一分类选择对应的 Clash/Mihomo、Surge、Loon、Shadowrocket、Quantumult X 或 sing-box 格式 |
+| 给不同客户端提供规则 | 为同一分类选择对应的 Clash/Mihomo、Surge、Loon、Shadowrocket、Quantumult X、sing-box 或 MosDNS 格式 |
 | 使用自己的 `.dat` 文件 | 选择“自定义”来源，填写公开的 HTTPS 下载地址 |
 
 ## 如何使用
@@ -21,7 +21,7 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 1. 打开 [Demo](https://geo2rule.ameu.net/)，选择 **Geosite** 或 **GeoIP**。
 2. 选择数据来源。默认使用 [Loyalsoldier](https://github.com/Loyalsoldier/v2ray-rules-dat)，也可选择 V2Fly 或自定义 `.dat` 地址。
 3. 搜索并选择分类。Geosite 可进一步选择要包含或排除的属性；GeoIP 没有属性。
-4. 选择客户端格式，复制生成的订阅地址，填入客户端的远程规则集配置。
+4. 选择客户端格式，复制生成的地址，填入客户端的配置。
 
 常用地址示例：
 
@@ -31,6 +31,8 @@ Demo 适合体验和检查输出。公共站点的访问额度由所有用户共
 | Mihomo MRS 域名规则 | [`/rules/mrs/google.mrs`](https://geo2rule.ameu.net/rules/mrs/google.mrs) |
 | Mihomo/Clash GeoIP 规则 | [`/rules/geoip/clash/cn.yaml`](https://geo2rule.ameu.net/rules/geoip/clash/cn.yaml) |
 | sing-box 域名规则 | [`/rules/sing-box/google.json`](https://geo2rule.ameu.net/rules/sing-box/google.json) |
+| MosDNS 域名规则集 | [`/rules/mosdns/google.txt`](https://geo2rule.ameu.net/rules/mosdns/google.txt) |
+| MosDNS GeoIP 规则集 | [`/rules/geoip/mosdns/cn.txt`](https://geo2rule.ameu.net/rules/geoip/mosdns/cn.txt) |
 
 例如，在 Mihomo 中订阅 `google` 域名分类：
 
@@ -48,9 +50,15 @@ rules:
 
 长期使用时，把示例中的 Demo 域名换成自己部署后的域名，并把 `PROXY` 换成自己的策略组。若使用 MRS，请选择 `behavior: domain`、`format: mrs`；GeoIP MRS 则使用 `behavior: ipcidr`。
 
+### MosDNS 规则集
+
+在网页选择 **MosDNS** 格式，可下载 MosDNS v5 `domain_set` 或 `ip_set` 插件可读取的规则文件。Geosite 会保留匹配类型：`domain:` 表示域名及其子域名，`full:` 表示完整匹配，`keyword:` 表示关键词，`regexp:` 表示正则表达式；GeoIP 输出 CIDR 清单。网页会提供把域名规则接到 `forward` 上游的配置片段，也可指定上游地址，例如 `223.5.5.5`。
+
+MosDNS 规则集只保存匹配规则；选择的上游地址会放入配置示例中的 `forward` 插件。域名规则需要通过 `qname` 匹配器加入主 `sequence`，并放在默认转发分支之前。
+
 ### 格式和来源说明
 
-- 网页会按所选客户端生成正确的地址。Clash/Mihomo 支持 YAML、文本和 MRS；sing-box 使用 JSON；其他客户端使用各自的规则列表。
+- 网页会按所选客户端生成正确的地址。Clash/Mihomo 支持 YAML、文本和 MRS；sing-box 使用 JSON；MosDNS 输出可由 `domain_set` / `ip_set` 插件加载的规则文件；其他客户端使用各自的规则列表。
 - 域名正则规则并非所有格式都支持。不支持的规则会被跳过；如果所选分类无法生成任何有效规则，接口会返回错误。响应头 `X-Rule-Count` 和 `X-Skipped-Rules` 可查看生成和跳过的数量。
 - 自定义来源需是公开 HTTPS 地址，使用默认 HTTPS 端口，单个 `.dat` 文件不超过 32 MiB。请使用可信的数据来源。
 - 规则缓存每天北京时间 09:00 到期；通常会先返回上一版并在后台刷新，缓存过期较久时可能需要等待更新完成。
