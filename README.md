@@ -60,7 +60,7 @@ MosDNS 规则集只保存匹配规则；选择的上游地址会放入配置示�
 
 ### SmartDNS 规则集
 
-在网页选择 **SmartDNS** 格式，Geosite 会生成可由 `conf-file` 引入的配置片段，包含指定上游和域名分流规则。默认上游是 `223.5.5.5`，也可填写 SmartDNS 支持的服务器地址，例如 `tls://dns.google:853` 或 `https://dns.google/dns-query`。域名后缀会生成为 `nameserver /example.org/geo2rule`，完整域名会生成为 `nameserver /-www.example.org/geo2rule`；关键词和正则类型无法由 SmartDNS 直接匹配，会被跳过。
+在网页选择 **SmartDNS** 格式，Geosite 会生成可由 `conf-file` 引入的配置片段，包含指定上游和域名分流规则。分组名根据所选规则名自动生成；默认上游是 `223.5.5.5`，也可填写 SmartDNS 支持的服务器地址，例如 `tls://dns.google:853` 或 `https://dns.google/dns-query`。域名后缀会生成对应分组的 `nameserver /example.org/<group>`，完整域名会生成 `nameserver /-www.example.org/<group>`；关键词和正则类型无法由 SmartDNS 直接匹配，会被跳过。
 
 GeoIP 会输出原始 CIDR 清单，可通过网页给出的 `ip-set -name geo2rule -type list -file ...` 指令加载，并在 SmartDNS 的 IP 规则中引用。
 

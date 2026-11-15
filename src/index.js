@@ -228,16 +228,26 @@ function invalidRuleValue(value, type, allowRegexComma = false) {
     ((!allowRegexComma || type !== 1) && value.includes(","));
 }
 
+function smartdnsGroupName(ruleName) {
+  const name = String(ruleName || "rules").toLowerCase();
+  const safe = name.replace(/[^a-z0-9_.-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "") || "rules";
+  if (safe === name && safe.length <= 31) return safe;
+  let hash = 2166136261;
+  for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 16777619);
+  const suffix = (hash >>> 0).toString(16).padStart(8, "0");
+  return `${safe.slice(0, 22)}-${suffix}`;
+}
+
 function singBox(fields) {
   const rule = Object.fromEntries(Object.entries(fields).filter(([, values]) => values.length));
   const count = Object.values(rule).reduce((total, values) => total + values.length, 0);
   return { body: JSON.stringify({ version: 1, rules: count ? [rule] : [] }, null, 2) + "\n", count, skipped: 0 };
 }
 
-function renderSite(domains, format, smartdnsUpstream = "223.5.5.5") {
+function renderSite(domains, format, smartdnsUpstream = "223.5.5.5", ruleName = "rules") {
   if (format === "mrs") return domainMrs(domains);
   if (format === "smartdns") {
-    const group = "geo2rule";
+    const group = smartdnsGroupName(ruleName);
     const lines = new Set();
     let skipped = 0;
     for (const { type, value } of domains) {
@@ -391,13 +401,15 @@ async function handleRequest(request, env, ctx) {
       catch { return json({ error: "Invalid category" }, 400); }
       if (!selected || (attributeMatch && (selected.include.length || selected.exclude.length))) return json({ error: "Invalid category" }, 400);
     }
+    const ruleName = selected
+      ? [selected.category, ...selected.include, ...selected.exclude.map(value => `-${value}`)].join("@")
+      : null;
 
     const cache = globalThis.caches?.default;
     const cacheUrl = new URL(url.origin);
     if (ruleMatch) {
-      const name = [selected.category, ...selected.include, ...selected.exclude.map(value => `-${value}`)].join("@");
       const suffix = format === "clash" ? "yaml" : format === "mrs" ? "mrs" : format === "sing-box" ? "json" : format === "mosdns" ? "txt" : format === "smartdns" ? (type === "geoip" ? "txt" : "conf") : "list";
-      cacheUrl.pathname = `/rules/${type === "geoip" ? "geoip/" : ""}${format}/${encodeURIComponent(name)}.${suffix}`;
+      cacheUrl.pathname = `/rules/${type === "geoip" ? "geoip/" : ""}${format}/${encodeURIComponent(ruleName)}.${suffix}`;
     } else if (attributeMatch) {
       cacheUrl.pathname = `/attributes/${encodeURIComponent(selected.category)}`;
     } else cacheUrl.pathname = url.pathname;
@@ -488,7 +500,7 @@ async function handleRequest(request, env, ctx) {
             }
           }
           const data = readCategory(bytes, selected.category, selected.include, selected.exclude, index);
-          const result = renderSite(data.domains, format, smartdnsUpstream);
+          const result = renderSite(data.domains, format, smartdnsUpstream, ruleName);
           if (!result.count) return json({ error: "No rules can be converted for this category" }, 422);
           response = responseForRules(result, format);
         }

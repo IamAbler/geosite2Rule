@@ -26,9 +26,9 @@ function siteData(type = 2, value = "example.org") {
   return new Uint8Array(field(1, category));
 }
 
-function siteDataWithDomains(domains) {
+function siteDataWithDomains(domains, categoryName = "test") {
   const entries = domains.map(({ type, value }) => [8, type, ...field(2, value)]);
-  const category = [...field(1, "test"), ...entries.flatMap(entry => field(2, entry))];
+  const category = [...field(1, categoryName), ...entries.flatMap(entry => field(2, entry))];
   return new Uint8Array(field(1, category));
 }
 
@@ -163,17 +163,17 @@ test("converts Geosite suffix and exact rules to SmartDNS config", async () => {
     { type: 2, value: "example.org" },
     { type: 3, value: "www.example.org" },
     { type: 2, value: "example.org" }
-  ]);
-  const path = `/rules/smartdns/test.conf?source=custom&url=${encodeURIComponent(source)}&upstream=${encodeURIComponent("tls://dns.example.org:853")}`;
+  ], "google");
+  const path = `/rules/smartdns/google.conf?source=custom&url=${encodeURIComponent(source)}&upstream=${encodeURIComponent("tls://dns.example.org:853")}`;
   const { response } = await request(path, () => new Response(bytes));
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(response.headers.get("x-rule-count"), "2");
   assert.equal(response.headers.get("x-skipped-rules"), "2");
   assert.equal(await response.text(), [
-    "server tls://dns.example.org:853 -group geo2rule",
-    "nameserver /-www.example.org/geo2rule",
-    "nameserver /example.org/geo2rule",
+    "server tls://dns.example.org:853 -group google",
+    "nameserver /-www.example.org/google",
+    "nameserver /example.org/google",
     ""
   ].join("\n"));
 });
@@ -207,8 +207,8 @@ test("separates SmartDNS edge cache entries by upstream address", async () => {
     const base = `/rules/smartdns/test.conf?source=custom&url=${encodeURIComponent(source)}`;
     const first = await request(base + "&upstream=223.5.5.5", () => new Response(siteData()));
     const second = await request(base + "&upstream=119.29.29.29", () => new Response(siteData()));
-    assert.match(await first.response.text(), /^server 223\.5\.5\.5 -group geo2rule/);
-    assert.match(await second.response.text(), /^server 119\.29\.29\.29 -group geo2rule/);
+    assert.match(await first.response.text(), /^server 223\.5\.5\.5 -group test/);
+    assert.match(await second.response.text(), /^server 119\.29\.29\.29 -group test/);
     assert.equal(entries.size, 2);
   } finally {
     globalThis.caches = originalCaches;
